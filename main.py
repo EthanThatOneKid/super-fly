@@ -15,7 +15,6 @@ from telemetry import DrosophilaTelemetryOverlay
 
 # NES Action mapping: [NOOP, RIGHT, JUMP, RIGHT+JUMP]
 # NES retro action array (12 buttons): [B, Y, SELECT, START, UP, DOWN, LEFT, RIGHT, A, MODE, L, R]
-# Index 0: B, Index 7: RIGHT, Index 8: A (JUMP)
 ACTION_MAP = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 0: NOOP
     [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],  # 1: RIGHT
@@ -30,6 +29,8 @@ def parse_args():
     parser.add_argument("--max-steps", type=int, default=2000, help="Max steps per episode")
     parser.add_argument("--headless", action="store_true", help="Run without UI overlay rendering")
     parser.add_argument("--render", action="store_true", help="Enable live visualization telemetry window")
+    parser.add_argument("--web", action="store_true", help="Launch live web browser streaming dashboard")
+    parser.add_argument("--port", type=int, default=5000, help="Port for web browser dashboard")
     parser.add_argument("--lr", type=float, default=0.005, help="Learning rate for dopamine STDP")
     parser.add_argument("--save-path", type=str, default="drosophila_snn.pth", help="Path to save/load SNN model weights")
     return parser.parse_args()
@@ -37,13 +38,19 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # Launch Web Server if --web flag passed
+    if args.web:
+        from web_server import start_server
+        print(f"Starting Drosophila Fly SNN Web Dashboard on http://localhost:{args.port} ...")
+        start_server(port=args.port, rom=args.rom)
+        return
+
     # Import ROM if provided
     if args.rom and os.path.exists(args.rom):
         import_nes_rom(args.rom)
 
     import stable_retro
 
-    # Check games list
     game_id = "SuperMarioBros-Nes-v0" if "SuperMarioBros-Nes-v0" in stable_retro.data.list_games() else "SuperMarioBros-Nes"
     try:
         env = stable_retro.make(game=game_id, state="Level1-1", render_mode=None, use_restricted_actions=stable_retro.Actions.FILTERED)
