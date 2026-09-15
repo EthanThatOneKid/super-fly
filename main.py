@@ -25,7 +25,7 @@ ACTION_MAP = [
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Drosophila Melanogaster Connectome SNN - Super Mario Bros")
-    parser.add_argument("--rom", type=str, default="", help="Path to Super Mario Bros NES ROM file")
+    parser.add_argument("--rom", type=str, default="roms/Super Mario Bros. (World).nes", help="Path to Super Mario Bros NES ROM file")
     parser.add_argument("--episodes", type=int, default=50, help="Number of training episodes")
     parser.add_argument("--max-steps", type=int, default=2000, help="Max steps per episode")
     parser.add_argument("--headless", action="store_true", help="Run without UI overlay rendering")
@@ -38,22 +38,19 @@ def main():
     args = parse_args()
 
     # Import ROM if provided
-    if args.rom:
+    if args.rom and os.path.exists(args.rom):
         import_nes_rom(args.rom)
 
     import stable_retro
 
-    game_id = "SuperMarioBros-Nes"
+    # Check games list
+    game_id = "SuperMarioBros-Nes-v0" if "SuperMarioBros-Nes-v0" in stable_retro.data.list_games() else "SuperMarioBros-Nes"
     try:
-        env = stable_retro.make(game=game_id, state="Level1-1", use_restricted_actions=stable_retro.Actions.FILTERED)
+        env = stable_retro.make(game=game_id, state="Level1-1", render_mode=None, use_restricted_actions=stable_retro.Actions.FILTERED)
     except Exception as e:
-        # Fallback check for version suffix if needed
-        try:
-            env = stable_retro.make(game="SuperMarioBros-Nes-v0", state="Level1-1", use_restricted_actions=stable_retro.Actions.FILTERED)
-        except Exception as inner_e:
-            print(f"Error loading SuperMarioBros-Nes: {e}")
-            print("Please pass your Super Mario Bros NES ROM file via '--rom path/to/rom.nes' to initialize the environment.")
-            sys.exit(1)
+        print(f"Error loading SuperMarioBros-Nes: {e}")
+        print("Please pass your Super Mario Bros NES ROM file via '--rom path/to/rom.nes' to initialize the environment.")
+        sys.exit(1)
 
     preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
     model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
@@ -66,7 +63,7 @@ def main():
         model.load_state_dict(torch.load(args.save_path))
 
     best_x_pos = 0
-    print("Starting Drosophila Melanogaster SNN Training Loop...")
+    print(f"Starting Drosophila Melanogaster SNN Training Loop on {game_id}...")
 
     for episode in range(1, args.episodes + 1):
         obs, info = env.reset()
