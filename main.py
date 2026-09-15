@@ -43,11 +43,17 @@ def main():
 
     import stable_retro
 
+    game_id = "SuperMarioBros-Nes"
     try:
-        env = stable_retro.make(game="SuperMarioBros-Nes", state="Level1-1", use_restricted_actions=stable_retro.Actions.FILTERED)
+        env = stable_retro.make(game=game_id, state="Level1-1", use_restricted_actions=stable_retro.Actions.FILTERED)
     except Exception as e:
-        print(f"Error loading SuperMarioBros-Nes: {e}")
-        sys.exit(1)
+        # Fallback check for version suffix if needed
+        try:
+            env = stable_retro.make(game="SuperMarioBros-Nes-v0", state="Level1-1", use_restricted_actions=stable_retro.Actions.FILTERED)
+        except Exception as inner_e:
+            print(f"Error loading SuperMarioBros-Nes: {e}")
+            print("Please pass your Super Mario Bros NES ROM file via '--rom path/to/rom.nes' to initialize the environment.")
+            sys.exit(1)
 
     preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
     model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
