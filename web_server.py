@@ -1,35 +1,29 @@
-import os
-import sys
-import time
 import threading
+import time
+
 import cv2
-import numpy as np
-import torch
 from flask import Flask, Response, render_template_string, jsonify
 
-from vision import OmmatidiaVisionPreprocessor
-from connectome import DrosophilaConnectomeSNN
-from stdp import DualDopamineSTDP
-from ram_tracker import MarioRAMTracker
-from rom_importer import import_nes_rom
-from telemetry import DrosophilaTelemetryOverlay
-
-# Action mapping: [NOOP, RIGHT, JUMP, RIGHT+JUMP]
-ACTION_MAP = [
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 0: NOOP
-    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],  # 1: RIGHT
-    [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],  # 2: JUMP
-    [1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],  # 3: RIGHT + JUMP
-]
+from simulation import (
+    Simulation,
+    make_env,
+    DEFAULT_ROM_PATH,
+    DEFAULT_SAVE_PATH,
+    DEFAULT_LR,
+    DEFAULT_MAX_STEPS,
+)
 
 class FlyBrainWebRunner:
-    def __init__(self, rom_path="roms/Super Mario Bros. (World).nes", model_path="drosophila_snn.pth"):
+    def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH,
+                 lr=DEFAULT_LR, max_steps=DEFAULT_MAX_STEPS):
         self.rom_path = rom_path
-        self.model_path = model_path
+        self.save_path = save_path
+        self.lr = lr
+        self.max_steps = max_steps
         self.latest_jpeg = None
         self.lock = threading.Lock()
         self.running = False
-        self.stats = {"episode": 0, "max_x": 0, "pam": 0.0, "ppl1": 0.0, "step": 0}
+        self.stats = {"episode": 0, "max_x": 0, "best_x": 0, "pam": 0.0, "ppl1": 0.0, "step": 0}
 
     def start_simulation(self):
         if self.running:
@@ -39,80 +33,51 @@ class FlyBrainWebRunner:
         self.thread.start()
 
     def _run_loop(self):
-        import stable_retro
-        if self.rom_path and os.path.exists(self.rom_path):
-            import_nes_rom(self.rom_path)
-
-        game_id = "SuperMarioBros-Nes-v0" if "SuperMarioBros-Nes-v0" in stable_retro.data.list_games() else "SuperMarioBros-Nes"
-        env = stable_retro.make(game=game_id, state="Level1-1", render_mode=None, use_restricted_actions=stable_retro.Actions.FILTERED)
-
-        preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
-        model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
-        stdp = DualDopamineSTDP(model, lr=0.005)
-        ram_tracker = MarioRAMTracker()
-        telemetry = DrosophilaTelemetryOverlay()
-
-        if os.path.exists(self.model_path):
-            model.load_state_dict(torch.load(self.model_path))
+        env, _ = make_env(self.rom_path)
+        sim = Simulation(rom_path=self.rom_path, save_path=self.save_path, lr=self.lr)
 
         episode = 0
-        best_x = 0
+        try:
+            while self.running:
+                episode += 1
+                obs = sim.reset_episode(env)
 
-        while self.running:
-            episode += 1
-            obs, info = env.reset()
-            preprocessor.reset()
-            model.reset_state()
-            ram_tracker.reset()
+                ep_pam = 0.0
+                ep_ppl1 = 0.0
+                step = 0
 
-            ep_pam = 0.0
-            ep_ppl1 = 0.0
-            step = 0
+                while self.running and step < self.max_steps:
+                    step += 1
+                    outcome = sim.step(env, obs)
+                    obs = outcome["obs"]
+                    ep_pam += outcome["d_pam"]
+                    ep_ppl1 += outcome["d_ppl1"]
 
-            while self.running and step < 2000:
-                step += 1
-                features, _ = preprocessor.process_frame(obs)
-                spikes = preprocessor.generate_poisson_spikes(features)
+                    sim.maybe_save_record()
 
-                motor_spikes, layer_acts = model(spikes)
-                active = torch.where(motor_spikes > 0)[0]
-                action_idx = active[0].item() if len(active) > 0 else 1
+                    # Render canvas & encode JPEG
+                    canvas = sim.telemetry.render_overlay(
+                        obs, outcome["layer_acts"], outcome["d_pam"], outcome["d_ppl1"], outcome["ram_info"]
+                    )
+                    _, jpeg_bytes = cv2.imencode('.jpg', canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
 
-                retro_action = ACTION_MAP[action_idx]
-                obs, reward, terminated, truncated, env_info = env.step(retro_action)
+                    with self.lock:
+                        self.latest_jpeg = jpeg_bytes.tobytes()
+                        self.stats = {
+                            "episode": episode,
+                            "max_x": outcome["ram_info"]["max_x_pos"],
+                            "best_x": sim.best_x,
+                            "pam": round(ep_pam, 2),
+                            "ppl1": round(ep_ppl1, 2),
+                            "step": step,
+                        }
 
-                ram = env.get_ram()
-                d_pam, d_ppl1, ram_info = ram_tracker.compute_dopamine(ram, terminated, truncated)
-                stdp.step(d_pam, d_ppl1)
+                    if outcome["terminated"] or outcome["truncated"]:
+                        break
 
-                ep_pam += d_pam
-                ep_ppl1 += d_ppl1
-
-                # Render canvas & encode JPEG
-                canvas = telemetry.render_overlay(obs, layer_acts, d_pam, d_ppl1, ram_info)
-                _, jpeg_bytes = cv2.imencode('.jpg', canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-
-                with self.lock:
-                    self.latest_jpeg = jpeg_bytes.tobytes()
-                    self.stats = {
-                        "episode": episode,
-                        "max_x": ram_info['max_x_pos'],
-                        "best_x": max(best_x, ram_info['max_x_pos']),
-                        "pam": round(ep_pam, 2),
-                        "ppl1": round(ep_ppl1, 2),
-                        "step": step
-                    }
-
-                if ram_info['max_x_pos'] > best_x:
-                    best_x = ram_info['max_x_pos']
-                    torch.save(model.state_dict(), self.model_path)
-
-                if terminated or truncated:
-                    break
-
-                time.sleep(0.01)  # Frame rate limit (~60 fps cap)
-
-        env.close()
+                    time.sleep(0.01)  # Frame rate limit (~60 fps cap)
+        finally:
+            env.close()
 
 runner = FlyBrainWebRunner()
 app = Flask(__name__)
@@ -183,8 +148,12 @@ def stats():
     with runner.lock:
         return jsonify(runner.stats)
 
-def start_server(port=5000, rom="roms/Super Mario Bros. (World).nes"):
+def start_server(port=5000, rom=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH,
+                 lr=DEFAULT_LR, max_steps=DEFAULT_MAX_STEPS):
     runner.rom_path = rom
+    runner.save_path = save_path
+    runner.lr = lr
+    runner.max_steps = max_steps
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
 if __name__ == '__main__':
