@@ -23,7 +23,10 @@ class FlyBrainWebRunner:
         self.latest_jpeg = None
         self.lock = threading.Lock()
         self.running = False
-        self.stats = {"episode": 0, "max_x": 0, "best_x": 0, "pam": 0.0, "ppl1": 0.0, "step": 0}
+        self.stats = {
+            "episode": 0, "max_x": 0, "best_x": 0, "pam": 0.0, "ppl1": 0.0, "step": 0,
+            "action_source": "right", "model_jumps": 0, "assisted_jumps": 0, "bootstrap_active": False
+        }
 
     def start_simulation(self):
         if self.running:
@@ -55,9 +58,17 @@ class FlyBrainWebRunner:
 
                     sim.maybe_save_record()
 
+                    telemetry_info = dict(outcome["ram_info"])
+                    telemetry_info.update({
+                        "action_source": outcome["action_source"],
+                        "model_jumps": outcome["model_jumps"],
+                        "assisted_jumps": outcome["assisted_jumps"],
+                        "bootstrap_active": outcome["bootstrap_active"],
+                    })
+
                     # Render canvas & encode JPEG
                     canvas = sim.telemetry.render_overlay(
-                        obs, outcome["layer_acts"], outcome["d_pam"], outcome["d_ppl1"], outcome["ram_info"]
+                        obs, outcome["layer_acts"], outcome["d_pam"], outcome["d_ppl1"], telemetry_info
                     )
                     _, jpeg_bytes = cv2.imencode('.jpg', canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
 
@@ -70,6 +81,10 @@ class FlyBrainWebRunner:
                             "pam": round(ep_pam, 2),
                             "ppl1": round(ep_ppl1, 2),
                             "step": step,
+                            "action_source": outcome["action_source"],
+                            "model_jumps": outcome["model_jumps"],
+                            "assisted_jumps": outcome["assisted_jumps"],
+                            "bootstrap_active": outcome["bootstrap_active"],
                         }
 
                     if outcome["terminated"] or outcome["truncated"]:

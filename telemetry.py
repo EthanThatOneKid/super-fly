@@ -103,10 +103,17 @@ class DrosophilaTelemetryOverlay:
         cv2.putText(canvas, f"PPL1 (Aversion): {d_ppl1:.2f}", (right_x + 310, 535),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
-        # Telemetry Text
-        cv2.putText(canvas, f"Horizontal Progress X: {info.get('x_pos', 0)}", (right_x, 580),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(canvas, f"Max X Reached: {info.get('max_x_pos', 0)}", (right_x, 605),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        # Telemetry Text & Action Accounting
+        action_source = info.get("action_source", "N/A")
+        model_jumps = info.get("model_jumps", 0)
+        assisted_jumps = info.get("assisted_jumps", 0)
+        bootstrap_active = info.get("bootstrap_active", False)
+
+        cv2.putText(canvas, f"Action Source: {action_source} | Bootstrap: {bootstrap_active}", (right_x, 575),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
+        cv2.putText(canvas, f"Model Jumps: {model_jumps} | Assisted Jumps: {assisted_jumps}", (right_x, 595),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
+        cv2.putText(canvas, f"Horizontal Progress X: {info.get('x_pos', 0)} | Max X: {info.get('max_x_pos', 0)}", (right_x, 615),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         return canvas
