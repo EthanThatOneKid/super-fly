@@ -154,7 +154,11 @@ class Simulation:
         features, _ = self.preprocessor.process_frame(obs)
         spikes = self.preprocessor.generate_poisson_spikes(features)
 
-        motor_spikes, layer_acts = self.model(spikes)
+        if train:
+            motor_spikes, layer_acts = self.model(spikes)
+        else:
+            with torch.no_grad():
+                motor_spikes, layer_acts = self.model(spikes)
 
         # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
         jump_requested = (motor_spikes[2] > 0 or motor_spikes[3] > 0)

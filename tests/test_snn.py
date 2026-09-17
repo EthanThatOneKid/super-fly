@@ -165,6 +165,7 @@ class TestSuperFlyRegression(unittest.TestCase):
             self.assertEqual(sim.model.layer3_4.trace_post[3].item(), initial_post_trace)
             # Weights should remain unchanged
             torch.testing.assert_close(sim.model.layer1_2.weight, initial_weight)
+            self.assertTrue(all(not activation.requires_grad for activation in res["layer_acts"].values()))
 
     def test_telemetry_info_structure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
