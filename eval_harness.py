@@ -1,78 +1,141 @@
 import argparse
-import os
 import json
+import os
+
+import numpy as np
 import torch
 
 from simulation import Simulation, make_env, DEFAULT_ROM_PATH, DEFAULT_SAVE_PATH
 
-import numpy as np
 
-def evaluate_agent(rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, episodes=5, max_steps=1000,
-                   bootstrap_episodes=0, max_bootstrap_step=0, seed=42):
-    """
-    Evaluates the fly SNN agent deterministically in an isolated environment without updating weights.
-    """
+POLICIES = ("agent", "right_only", "bootstrap_only")
+
+
+def evaluate_agent(
+    rom_path=DEFAULT_ROM_PATH,
+    save_path=DEFAULT_SAVE_PATH,
+    episodes=5,
+    max_steps=1000,
+    bootstrap_episodes=0,
+    max_bootstrap_step=0,
+    seed=42,
+    policy="agent",
+):
+    """Evaluate one policy without changing checkpoint weights."""
+    if policy not in POLICIES:
+        raise ValueError(f"Unknown evaluation policy: {policy}")
+    if episodes < 0 or max_steps < 0:
+        raise ValueError("episodes and max_steps must be non-negative")
     if not os.path.exists(rom_path):
         print(f"ROM path '{rom_path}' not found. Skipping evaluation harness execution.")
         return None
 
-    # Seed random number generators for reproducible evaluation trajectories
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env, game_id = make_env(rom_path)
-    sim = Simulation(rom_path=rom_path, save_path=save_path,
-                     bootstrap_episodes=bootstrap_episodes, max_bootstrap_step=max_bootstrap_step)
+    env, _ = make_env(rom_path)
+    sim = Simulation(
+        rom_path=rom_path,
+        save_path=save_path,
+        bootstrap_episodes=bootstrap_episodes,
+        max_bootstrap_step=max_bootstrap_step,
+        policy=policy,
+    )
 
     results = []
-
     try:
         for ep in range(1, episodes + 1):
             obs = sim.reset_episode(env)
             ep_pam = 0.0
             ep_ppl1 = 0.0
             step = 0
+            model_jump_frames = 0
+            assisted_jump_frames = 0
+            outcome = None
 
             while step < max_steps:
                 step += 1
-                # Run step with train=False to disable STDP weight updates and trace injection
                 outcome = sim.step(env, obs, train=False)
                 obs = outcome["obs"]
                 ep_pam += outcome["d_pam"]
                 ep_ppl1 += outcome["d_ppl1"]
-
+                if outcome["action_source"] in {"model", "model_hold"}:
+                    model_jump_frames += 1
+                if outcome["action_source"] in {"bootstrap", "bootstrap_hold"}:
+                    assisted_jump_frames += 1
                 if outcome["terminated"] or outcome["truncated"]:
                     break
 
-            ep_result = {
-                "episode": ep,
-                "steps": step,
-                "max_x": outcome["ram_info"]["max_x_pos"],
-                "pam": round(ep_pam, 2),
-                "ppl1": round(ep_ppl1, 2),
-                "model_jumps": outcome["model_jumps"],
-                "assisted_jumps": outcome["assisted_jumps"],
-                "action_source": outcome["action_source"],
-                "bootstrap_active": outcome["bootstrap_active"],
-            }
-            results.append(ep_result)
+            terminated = bool(outcome["terminated"]) if outcome else False
+            truncated = bool(outcome["truncated"]) if outcome else False
+            ram_info = outcome["ram_info"] if outcome else {"max_x_pos": 0}
+            results.append(
+                {
+                    "episode": ep,
+                    "steps": step,
+                    "max_x": ram_info["max_x_pos"],
+                    "pam": round(ep_pam, 2),
+                    "ppl1": round(ep_ppl1, 2),
+                    "terminated": terminated,
+                    "truncated": truncated,
+                    "died": bool(outcome["died"]) if outcome else False,
+                    "survived_to_limit": step >= max_steps and not terminated,
+                    "model_jumps": outcome["model_jumps"] if outcome else 0,
+                    "assisted_jumps": outcome["assisted_jumps"] if outcome else 0,
+                    "model_jump_frames": model_jump_frames,
+                    "assisted_jump_frames": assisted_jump_frames,
+                    "action_source": outcome["action_source"] if outcome else "right",
+                    "bootstrap_active": outcome["bootstrap_active"] if outcome else False,
+                }
+            )
     finally:
         env.close()
 
-    avg_max_x = sum(r["max_x"] for r in results) / len(results) if results else 0
-    total_model_jumps = sum(r["model_jumps"] for r in results)
-    total_assisted_jumps = sum(r["assisted_jumps"] for r in results)
-
     summary = {
+        "policy": policy,
+        "seed": seed,
         "episodes_evaluated": len(results),
-        "avg_max_x": round(avg_max_x, 2),
-        "best_max_x": max(r["max_x"] for r in results) if results else 0,
-        "total_model_jumps": total_model_jumps,
-        "total_assisted_jumps": total_assisted_jumps,
+        "avg_max_x": round(sum(r["max_x"] for r in results) / len(results), 2) if results else 0,
+        "best_max_x": max((r["max_x"] for r in results), default=0),
+        "avg_steps": round(sum(r["steps"] for r in results) / len(results), 2) if results else 0,
+        "episodes_died": sum(r["died"] for r in results),
+        "episodes_terminated": sum(r["terminated"] for r in results),
+        "episodes_truncated": sum(r["truncated"] for r in results),
+        "episodes_survived_to_limit": sum(r["survived_to_limit"] for r in results),
+        "total_model_jumps": sum(r["model_jumps"] for r in results),
+        "total_assisted_jumps": sum(r["assisted_jumps"] for r in results),
+        "total_model_jump_frames": sum(r["model_jump_frames"] for r in results),
+        "total_assisted_jump_frames": sum(r["assisted_jump_frames"] for r in results),
         "episodes": results,
     }
-
     return summary
+
+
+def evaluate_policies(
+    rom_path=DEFAULT_ROM_PATH,
+    save_path=DEFAULT_SAVE_PATH,
+    episodes=5,
+    max_steps=1000,
+    seed=42,
+):
+    """Evaluate the learned policy against matched RIGHT and bootstrap controls."""
+    reports = {
+        "agent": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "agent"),
+        "right_only": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "right_only"),
+        "bootstrap_only": evaluate_agent(
+            rom_path, save_path, episodes, max_steps, episodes, 600, seed, "bootstrap_only"
+        ),
+    }
+    agent_x = reports["agent"]["avg_max_x"]
+    return {
+        "seed": seed,
+        "episodes": episodes,
+        "max_steps": max_steps,
+        "policies": reports,
+        "agent_delta_vs_right_only": round(agent_x - reports["right_only"]["avg_max_x"], 2),
+        "agent_delta_vs_bootstrap_only": round(agent_x - reports["bootstrap_only"]["avg_max_x"], 2),
+    }
+
 
 def main():
     parser = argparse.ArgumentParser(description="Deterministic Evaluation Harness for Drosophila SMB SNN Agent")
@@ -80,22 +143,26 @@ def main():
     parser.add_argument("--save-path", type=str, default=DEFAULT_SAVE_PATH, help="Path to SNN weights checkpoint")
     parser.add_argument("--episodes", type=int, default=5, help="Number of evaluation episodes")
     parser.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
-    parser.add_argument("--bootstrap-episodes", type=int, default=0, help="Bootstrap episodes override (0 to evaluate post-bootstrap)")
+    parser.add_argument("--policy", choices=POLICIES, default="agent", help="Policy to evaluate")
+    parser.add_argument("--compare-policies", action="store_true", help="Evaluate agent, RIGHT-only, and bootstrap-only controls")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible evaluation trajectories")
     args = parser.parse_args()
 
-    summary = evaluate_agent(
-        rom_path=args.rom,
-        save_path=args.save_path,
-        episodes=args.episodes,
-        max_steps=args.max_steps,
-        bootstrap_episodes=args.bootstrap_episodes,
-        max_bootstrap_step=0 if args.bootstrap_episodes == 0 else 600,
-        seed=args.seed,
-    )
+    if args.compare_policies:
+        summary = evaluate_policies(args.rom, args.save_path, args.episodes, args.max_steps, args.seed)
+    else:
+        summary = evaluate_agent(
+            rom_path=args.rom,
+            save_path=args.save_path,
+            episodes=args.episodes,
+            max_steps=args.max_steps,
+            seed=args.seed,
+            policy=args.policy,
+        )
 
     if summary is not None:
         print(json.dumps(summary, indent=2))
+
 
 if __name__ == "__main__":
     main()

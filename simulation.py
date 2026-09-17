@@ -208,7 +208,8 @@ class Simulation:
 
         ram = env.get_ram()
         # Override terminated if SMB death state detected in RAM
-        if self.ram_tracker.is_dead(ram):
+        died = self.ram_tracker.is_dead(ram)
+        if died:
             terminated = True
 
         d_pam, d_ppl1, ram_info = self.ram_tracker.compute_dopamine(ram, terminated, truncated)
@@ -224,6 +225,7 @@ class Simulation:
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
+            "died": died,
         })
 
         return {
@@ -242,4 +244,5 @@ class Simulation:
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
+            "died": died,
         }

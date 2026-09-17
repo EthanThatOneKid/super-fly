@@ -181,6 +181,7 @@ class TestSuperFlyRegression(unittest.TestCase):
             self.assertIn("model_jumps", telemetry)
             self.assertIn("assisted_jumps", telemetry)
             self.assertIn("bootstrap_active", telemetry)
+            self.assertIn("died", telemetry)
 
     def test_baseline_policies_isolate_jump_sources(self):
         with tempfile.TemporaryDirectory() as tmpdir:
