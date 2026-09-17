@@ -146,5 +146,5 @@ python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
 
 Keep the shared brain logic in `simulation.py` and the entrypoints
 (`main.py`, `web_server.py`) thin — they should only orchestrate loops, not
-reimplement the SNN wiring. Run `python -m py_compile` on changed modules; there
-is no test suite yet.
+reimplement the SNN wiring. Run `python -m py_compile` on changed modules, and
+run `python -m unittest discover -s tests` to verify unit test passes.
