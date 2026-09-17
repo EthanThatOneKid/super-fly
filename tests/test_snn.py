@@ -182,6 +182,47 @@ class TestSuperFlyRegression(unittest.TestCase):
             self.assertIn("assisted_jumps", telemetry)
             self.assertIn("bootstrap_active", telemetry)
 
+    def test_baseline_policies_isolate_jump_sources(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            def forced_jump(_):
+                motor = torch.tensor([0.0, 0.0, 0.0, 1.0])
+                return motor, {}
+
+            right_only = Simulation(
+                save_path=os.path.join(tmpdir, "right_only.pth"),
+                bootstrap_episodes=1,
+                max_bootstrap_step=600,
+                policy="right_only",
+            )
+            env = MockEnv()
+            obs = right_only.reset_episode(env)
+            right_only.model.forward = forced_jump
+            result = right_only.step(env, obs, train=False)
+            self.assertEqual(result["action_idx"], 1)
+            self.assertEqual(result["action_source"], "right")
+            self.assertFalse(result["bootstrap_active"])
+            self.assertEqual(result["model_jumps"], 0)
+            self.assertEqual(result["assisted_jumps"], 0)
+
+            bootstrap_only = Simulation(
+                save_path=os.path.join(tmpdir, "bootstrap_only.pth"),
+                bootstrap_episodes=1,
+                max_bootstrap_step=600,
+                policy="bootstrap_only",
+            )
+            env = MockEnv()
+            obs = bootstrap_only.reset_episode(env)
+            bootstrap_only.model.forward = forced_jump
+            for _ in range(127):
+                bootstrap_only.step(env, obs, train=False)
+            result = bootstrap_only.step(env, obs, train=False)
+            self.assertEqual(result["action_idx"], 3)
+            self.assertEqual(result["action_source"], "bootstrap")
+            self.assertTrue(result["bootstrap_active"])
+            self.assertEqual(result["model_jumps"], 0)
+            self.assertEqual(result["assisted_jumps"], 1)
+            self.assertEqual(result["policy"], "bootstrap_only")
+
 
 if __name__ == "__main__":
     unittest.main()
