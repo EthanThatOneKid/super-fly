@@ -135,11 +135,17 @@ class Simulation:
         self.save_checkpoint()
         return True
 
-    def step(self, env, obs):
+    def step(self, env, obs, train: bool = True):
         """Advance the agent by one step.
 
+        Args:
+            env: stable-retro environment
+            obs: current RGB frame
+            train: if True, applies STDP learning updates and trace injection;
+                   if False (eval_mode), learning updates are skipped.
+
         Returns a dict with the new observation plus per-step telemetry:
-        obs, action_idx, reward, d_pam, d_ppl1, ram_info, layer_acts, terminated, truncated,
+        obs, action_idx, reward, d_pam, d_ppl1, ram_info, telemetry_info, layer_acts, terminated, truncated,
         action_source, model_jumps, assisted_jumps, bootstrap_active.
         """
         self.current_step += 1
@@ -184,10 +190,10 @@ class Simulation:
         action_idx = 3 if execute_jump else 1
         self.action_source = action_source
 
-        # Teaching / Exploration motor trace injection:
+        # Teaching / Exploration motor trace injection (training mode only):
         # If jump is assisted (forced by bootstrap), update layer3_4 post-eligibility trace
         # so STDP associates active sensory patterns with jump timing.
-        if is_assisted:
+        if train and is_assisted:
             with torch.no_grad():
                 self.model.layer3_4.trace_post[3] = self.model.layer3_4.decay_trace * self.model.layer3_4.trace_post[3] + 1.0
 
@@ -199,7 +205,18 @@ class Simulation:
             terminated = True
 
         d_pam, d_ppl1, ram_info = self.ram_tracker.compute_dopamine(ram, terminated, truncated)
-        self.stdp.step(d_pam, d_ppl1)
+
+        # Apply STDP learning update only during training
+        if train:
+            self.stdp.step(d_pam, d_ppl1)
+
+        telemetry_info = dict(ram_info)
+        telemetry_info.update({
+            "action_source": self.action_source,
+            "model_jumps": self.model_jumps,
+            "assisted_jumps": self.assisted_jumps,
+            "bootstrap_active": self.bootstrap_active,
+        })
 
         return {
             "obs": obs,
@@ -208,6 +225,7 @@ class Simulation:
             "d_pam": d_pam,
             "d_ppl1": d_ppl1,
             "ram_info": ram_info,
+            "telemetry_info": telemetry_info,
             "layer_acts": layer_acts,
             "terminated": terminated,
             "truncated": truncated,

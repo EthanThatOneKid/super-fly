@@ -124,10 +124,10 @@ Run the unit test suite:
 python -m unittest discover -s tests
 ```
 
-Run the deterministic evaluation harness (post-bootstrap evaluation):
+Run the deterministic evaluation harness (eval_mode with seed for reproducible evaluation trajectories without updating weights):
 
 ```sh
-python eval_harness.py --episodes 5 --max-steps 1000
+python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
 ```
 
 ## How it works

@@ -134,6 +134,44 @@ class TestSuperFlyRegression(unittest.TestCase):
             sim2 = Simulation(save_path=save_path)
             torch.testing.assert_close(sim.model.layer1_2.weight, sim2.model.layer1_2.weight)
 
+    def test_eval_mode_disables_weight_updates_and_trace_injection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "test_model.pth")
+            sim = Simulation(save_path=save_path, bootstrap_episodes=1, max_bootstrap_step=600)
+            env = MockEnv()
+            obs = sim.reset_episode(env)
+
+            # Fast forward steps to step 128
+            for _ in range(127):
+                sim.step(env, obs, train=True)
+
+            initial_post_trace = sim.model.layer3_4.trace_post[3].item()
+            initial_weight = sim.model.layer1_2.weight.clone()
+
+            # Execute step at 128 with train=False
+            res = sim.step(env, obs, train=False)
+
+            self.assertEqual(res["action_source"], "bootstrap")
+            # In eval mode, trace_post should NOT be updated by trace injection
+            self.assertEqual(sim.model.layer3_4.trace_post[3].item(), initial_post_trace)
+            # Weights should remain unchanged
+            torch.testing.assert_close(sim.model.layer1_2.weight, initial_weight)
+
+    def test_telemetry_info_structure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "test_model.pth")
+            sim = Simulation(save_path=save_path)
+            env = MockEnv()
+            obs = sim.reset_episode(env)
+
+            res = sim.step(env, obs)
+            self.assertIn("telemetry_info", res)
+            telemetry = res["telemetry_info"]
+            self.assertIn("action_source", telemetry)
+            self.assertIn("model_jumps", telemetry)
+            self.assertIn("assisted_jumps", telemetry)
+            self.assertIn("bootstrap_active", telemetry)
+
 
 if __name__ == "__main__":
     unittest.main()

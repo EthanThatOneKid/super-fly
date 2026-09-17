@@ -5,14 +5,20 @@ import torch
 
 from simulation import Simulation, make_env, DEFAULT_ROM_PATH, DEFAULT_SAVE_PATH
 
+import numpy as np
+
 def evaluate_agent(rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, episodes=5, max_steps=1000,
-                   bootstrap_episodes=0, max_bootstrap_step=0):
+                   bootstrap_episodes=0, max_bootstrap_step=0, seed=42):
     """
-    Evaluates the fly SNN agent deterministically in an isolated environment.
+    Evaluates the fly SNN agent deterministically in an isolated environment without updating weights.
     """
     if not os.path.exists(rom_path):
         print(f"ROM path '{rom_path}' not found. Skipping evaluation harness execution.")
         return None
+
+    # Seed random number generators for reproducible evaluation trajectories
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     env, game_id = make_env(rom_path)
     sim = Simulation(rom_path=rom_path, save_path=save_path,
@@ -29,7 +35,8 @@ def evaluate_agent(rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, episo
 
             while step < max_steps:
                 step += 1
-                outcome = sim.step(env, obs)
+                # Run step with train=False to disable STDP weight updates and trace injection
+                outcome = sim.step(env, obs, train=False)
                 obs = outcome["obs"]
                 ep_pam += outcome["d_pam"]
                 ep_ppl1 += outcome["d_ppl1"]
@@ -74,6 +81,7 @@ def main():
     parser.add_argument("--episodes", type=int, default=5, help="Number of evaluation episodes")
     parser.add_argument("--max-steps", type=int, default=1000, help="Max steps per episode")
     parser.add_argument("--bootstrap-episodes", type=int, default=0, help="Bootstrap episodes override (0 to evaluate post-bootstrap)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible evaluation trajectories")
     args = parser.parse_args()
 
     summary = evaluate_agent(
@@ -83,6 +91,7 @@ def main():
         max_steps=args.max_steps,
         bootstrap_episodes=args.bootstrap_episodes,
         max_bootstrap_step=0 if args.bootstrap_episodes == 0 else 600,
+        seed=args.seed,
     )
 
     if summary is not None:
