@@ -9,6 +9,7 @@ from simulation import Simulation, make_env, DEFAULT_ROM_PATH, DEFAULT_SAVE_PATH
 
 
 POLICIES = ("agent", "right_only", "bootstrap_only")
+LAYER_NAMES = ("ommatidia", "optic_lobe", "central_complex", "motor_ganglion")
 
 
 def evaluate_agent(
@@ -52,6 +53,7 @@ def evaluate_agent(
             model_jump_frames = 0
             assisted_jump_frames = 0
             outcome = None
+            layer_spike_counts = {name: 0 for name in LAYER_NAMES}
 
             while step < max_steps:
                 step += 1
@@ -63,6 +65,8 @@ def evaluate_agent(
                     model_jump_frames += 1
                 if outcome["action_source"] in {"bootstrap", "bootstrap_hold"}:
                     assisted_jump_frames += 1
+                for name in LAYER_NAMES:
+                    layer_spike_counts[name] += int(outcome["layer_acts"][name].sum().item())
                 if outcome["terminated"] or outcome["truncated"]:
                     break
 
@@ -86,6 +90,11 @@ def evaluate_agent(
                     "assisted_jump_frames": assisted_jump_frames,
                     "action_source": outcome["action_source"] if outcome else "right",
                     "bootstrap_active": outcome["bootstrap_active"] if outcome else False,
+                    "layer_spike_counts": layer_spike_counts,
+                    "layer_spike_rates": {
+                        name: round(count / step, 6) if step else 0
+                        for name, count in layer_spike_counts.items()
+                    },
                 }
             )
     finally:
@@ -106,6 +115,13 @@ def evaluate_agent(
         "total_assisted_jumps": sum(r["assisted_jumps"] for r in results),
         "total_model_jump_frames": sum(r["model_jump_frames"] for r in results),
         "total_assisted_jump_frames": sum(r["assisted_jump_frames"] for r in results),
+        "avg_layer_spike_rates": {
+            name: round(
+                sum(r["layer_spike_rates"][name] for r in results) / len(results),
+                6,
+            ) if results else 0
+            for name in LAYER_NAMES
+        },
         "episodes": results,
     }
     return summary
