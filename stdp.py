@@ -51,3 +51,5 @@ class DualDopamineSTDP:
                 # Update weights and clip
                 layer.weight.add_(delta_w)
                 layer.weight.clamp_(self.w_min, self.w_max)
+                layer.weight -= layer.weight.mean(dim=1, keepdim=True)
+                layer.weight.clamp_(self.w_min, self.w_max)
