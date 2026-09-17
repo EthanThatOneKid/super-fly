@@ -51,6 +51,20 @@ class TestSuperFlyRegression(unittest.TestCase):
         self.assertEqual(model.layer2_3.current_gain, 6.0)
         self.assertEqual(model.layer3_4.current_gain, 6.0)
 
+    def test_stdp_keeps_weight_rows_centered(self):
+        model = DrosophilaConnectomeSNN()
+        stdp = DualDopamineSTDP(model)
+        with torch.no_grad():
+            for layer in (model.layer1_2, model.layer2_3, model.layer3_4):
+                layer.trace_pre.fill_(1.0)
+                layer.trace_post.fill_(1.0)
+
+        stdp.step(1.0, 0.0)
+
+        for layer in (model.layer1_2, model.layer2_3, model.layer3_4):
+            row_means = layer.weight.mean(dim=1)
+            self.assertTrue(torch.allclose(row_means, torch.zeros_like(row_means), atol=1e-6))
+
     def test_ram_tracker_x_pos(self):
         tracker = MarioRAMTracker()
         ram = np.zeros(0x0700, dtype=np.uint8)
