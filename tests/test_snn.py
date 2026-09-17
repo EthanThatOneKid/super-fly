@@ -45,6 +45,12 @@ class TestSuperFlyRegression(unittest.TestCase):
 
         self.assertEqual(output.tolist(), [1.0, 0.0])
 
+    def test_downstream_layers_use_activity_gain(self):
+        model = DrosophilaConnectomeSNN()
+        self.assertEqual(model.layer1_2.current_gain, 1.0)
+        self.assertEqual(model.layer2_3.current_gain, 6.0)
+        self.assertEqual(model.layer3_4.current_gain, 6.0)
+
     def test_ram_tracker_x_pos(self):
         tracker = MarioRAMTracker()
         ram = np.zeros(0x0700, dtype=np.uint8)
