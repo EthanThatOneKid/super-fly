@@ -22,6 +22,7 @@ class LIFNeuronLayer(nn.Module):
         self.alpha = float(np.exp(-dt / tau_m))
         self.v_thresh = v_thresh
         self.v_reset = v_reset
+        self.current_gain = 1.0
 
         # Dynamic states
         self.register_buffer('v', torch.zeros(out_features))
@@ -52,7 +53,7 @@ class LIFNeuronLayer(nn.Module):
 
         # Membrane potential integration with leak
         # Reset potential for neurons that fired in the previous step
-        self.v = self.alpha * self.v * (1.0 - self.spikes) + current
+        self.v = self.alpha * self.v * (1.0 - self.spikes) + current * self.current_gain
 
         # Firing condition
         self.spikes = (self.v >= self.v_thresh).float()
@@ -88,9 +89,11 @@ class DrosophilaConnectomeSNN(nn.Module):
 
         # Layer 2 -> Layer 3: Optic Lobe to Central Complex / Mushroom Body
         self.layer2_3 = LIFNeuronLayer(self.num_optic_lobe, self.num_central_complex, tau_m=20.0)
+        self.layer2_3.current_gain = 6.0
 
         # Layer 3 -> Layer 4: Central Complex to Thoracic Motor Ganglion
         self.layer3_4 = LIFNeuronLayer(self.num_central_complex, self.num_motor_ganglion, tau_m=25.0)
+        self.layer3_4.current_gain = 6.0
 
     def reset_state(self):
         """Reset internal state of all LIF layers."""
