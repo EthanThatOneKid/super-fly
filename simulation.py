@@ -63,12 +63,15 @@ class Simulation:
     """
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
-                 bootstrap_episodes=20, max_bootstrap_step=600):
+                 bootstrap_episodes=20, max_bootstrap_step=600, policy="agent"):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
         self.bootstrap_episodes = bootstrap_episodes
         self.max_bootstrap_step = max_bootstrap_step
+        if policy not in {"agent", "right_only", "bootstrap_only"}:
+            raise ValueError(f"Unknown evaluation policy: {policy}")
+        self.policy = policy
 
         self.preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
         self.model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
@@ -112,7 +115,7 @@ class Simulation:
         self.action_source = "right"
         self.model_jumps = 0
         self.assisted_jumps = 0
-        self.bootstrap_active = self.current_episode <= self.bootstrap_episodes
+        self.bootstrap_active = self.policy != "right_only" and self.current_episode <= self.bootstrap_episodes
 
         return obs
 
@@ -149,7 +152,7 @@ class Simulation:
         action_source, model_jumps, assisted_jumps, bootstrap_active.
         """
         self.current_step += 1
-        self.bootstrap_active = self.current_episode <= self.bootstrap_episodes and self.current_step <= self.max_bootstrap_step
+        self.bootstrap_active = self.policy != "right_only" and self.current_episode <= self.bootstrap_episodes and self.current_step <= self.max_bootstrap_step
 
         features, _ = self.preprocessor.process_frame(obs)
         spikes = self.preprocessor.generate_poisson_spikes(features)
@@ -161,7 +164,7 @@ class Simulation:
                 motor_spikes, layer_acts = self.model(spikes)
 
         # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = (motor_spikes[2] > 0 or motor_spikes[3] > 0)
+        jump_requested = self.policy == "agent" and (motor_spikes[2] > 0 or motor_spikes[3] > 0)
         action_source = "right"
         execute_jump = False
         is_assisted = False
@@ -220,6 +223,7 @@ class Simulation:
             "model_jumps": self.model_jumps,
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
+            "policy": self.policy,
         })
 
         return {
@@ -237,4 +241,5 @@ class Simulation:
             "model_jumps": self.model_jumps,
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
+            "policy": self.policy,
         }
