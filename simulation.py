@@ -62,10 +62,13 @@ class Simulation:
     brain-driven step primitive so both entrypoints share identical wiring.
     """
 
-    def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR):
+    def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
+                 bootstrap_episodes=20, max_bootstrap_step=600):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
+        self.bootstrap_episodes = bootstrap_episodes
+        self.max_bootstrap_step = max_bootstrap_step
 
         self.preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
         self.model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
@@ -74,6 +77,19 @@ class Simulation:
         self.telemetry = DrosophilaTelemetryOverlay()
 
         self.best_x = 0
+        self.current_episode = 0
+        self.current_step = 0
+
+        # Jump controller state
+        self.hold_jump_counter = 0
+        self.refractory_counter = 0
+        self.bootstrap_pulse_counter = 0
+
+        # Diagnostics & Action stats
+        self.action_source = "right"
+        self.model_jumps = 0
+        self.assisted_jumps = 0
+        self.bootstrap_active = False
 
         if os.path.exists(save_path):
             print(f"Loading existing model weights from {save_path}...")
@@ -85,38 +101,27 @@ class Simulation:
         self.preprocessor.reset()
         self.model.reset_state()
         self.ram_tracker.reset()
+
+        self.current_episode += 1
+        self.current_step = 0
+
+        self.hold_jump_counter = 0
+        self.refractory_counter = 0
+        self.bootstrap_pulse_counter = 0
+
+        self.action_source = "right"
+        self.model_jumps = 0
+        self.assisted_jumps = 0
+        self.bootstrap_active = self.current_episode <= self.bootstrap_episodes
+
         return obs
 
-    def step(self, env, obs):
-        """Advance the agent by one brain-driven step.
-
-        Returns a dict with the new observation plus per-step telemetry:
-        obs, action_idx, reward, d_pam, d_ppl1, ram_info, layer_acts, terminated, truncated.
-        """
-        features, _ = self.preprocessor.process_frame(obs)
-        spikes = self.preprocessor.generate_poisson_spikes(features)
-
-        motor_spikes, layer_acts = self.model(spikes)
-        active = torch.where(motor_spikes > 0)[0]
-        action_idx = active[0].item() if len(active) > 0 else DEFAULT_ACTION
-
-        obs, reward, terminated, truncated, _ = env.step(ACTION_MAP[action_idx])
-
-        ram = env.get_ram()
-        d_pam, d_ppl1, ram_info = self.ram_tracker.compute_dopamine(ram, terminated, truncated)
-        self.stdp.step(d_pam, d_ppl1)
-
-        return {
-            "obs": obs,
-            "action_idx": action_idx,
-            "reward": reward,
-            "d_pam": d_pam,
-            "d_ppl1": d_ppl1,
-            "ram_info": ram_info,
-            "layer_acts": layer_acts,
-            "terminated": terminated,
-            "truncated": truncated,
-        }
+    def save_checkpoint(self, path=None):
+        """Atomically persist SNN weights to disk."""
+        target_path = path if path is not None else self.save_path
+        tmp_path = f"{target_path}.tmp"
+        torch.save(self.model.state_dict(), tmp_path)
+        os.replace(tmp_path, target_path)
 
     def maybe_save_record(self):
         """Persist model weights when a new best distance is reached.
@@ -127,5 +132,109 @@ class Simulation:
         if x <= self.best_x:
             return False
         self.best_x = x
-        torch.save(self.model.state_dict(), self.save_path)
+        self.save_checkpoint()
         return True
+
+    def step(self, env, obs, train: bool = True):
+        """Advance the agent by one step.
+
+        Args:
+            env: stable-retro environment
+            obs: current RGB frame
+            train: if True, applies STDP learning updates and trace injection;
+                   if False (eval_mode), learning updates are skipped.
+
+        Returns a dict with the new observation plus per-step telemetry:
+        obs, action_idx, reward, d_pam, d_ppl1, ram_info, telemetry_info, layer_acts, terminated, truncated,
+        action_source, model_jumps, assisted_jumps, bootstrap_active.
+        """
+        self.current_step += 1
+        self.bootstrap_active = self.current_episode <= self.bootstrap_episodes and self.current_step <= self.max_bootstrap_step
+
+        features, _ = self.preprocessor.process_frame(obs)
+        spikes = self.preprocessor.generate_poisson_spikes(features)
+
+        if train:
+            motor_spikes, layer_acts = self.model(spikes)
+        else:
+            with torch.no_grad():
+                motor_spikes, layer_acts = self.model(spikes)
+
+        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
+        jump_requested = (motor_spikes[2] > 0 or motor_spikes[3] > 0)
+        action_source = "right"
+        execute_jump = False
+        is_assisted = False
+
+        if self.refractory_counter > 0:
+            self.refractory_counter -= 1
+
+        if self.hold_jump_counter > 0:
+            self.hold_jump_counter -= 1
+            execute_jump = True
+            action_source = "model_hold"
+        elif jump_requested and self.refractory_counter == 0:
+            execute_jump = True
+            self.hold_jump_counter = 3  # Hold for 4 frames total (current frame + 3)
+            self.refractory_counter = 24  # 24-step refractory period
+            action_source = "model"
+            self.model_jumps += 1
+        elif self.bootstrap_pulse_counter > 0:
+            self.bootstrap_pulse_counter -= 1
+            execute_jump = True
+            action_source = "bootstrap_hold"
+            is_assisted = True
+        elif self.bootstrap_active and self.current_step >= 128 and (self.current_step - 128) % 84 == 0:
+            execute_jump = True
+            self.bootstrap_pulse_counter = 19  # 20 frames pulse total
+            action_source = "bootstrap"
+            self.assisted_jumps += 1
+            is_assisted = True
+
+        action_idx = 3 if execute_jump else 1
+        self.action_source = action_source
+
+        # Teaching / Exploration motor trace injection (training mode only):
+        # If jump is assisted (forced by bootstrap), update layer3_4 post-eligibility trace
+        # so STDP associates active sensory patterns with jump timing.
+        if train and is_assisted:
+            with torch.no_grad():
+                self.model.layer3_4.trace_post[3] = self.model.layer3_4.decay_trace * self.model.layer3_4.trace_post[3] + 1.0
+
+        obs, reward, terminated, truncated, _ = env.step(ACTION_MAP[action_idx])
+
+        ram = env.get_ram()
+        # Override terminated if SMB death state detected in RAM
+        if self.ram_tracker.is_dead(ram):
+            terminated = True
+
+        d_pam, d_ppl1, ram_info = self.ram_tracker.compute_dopamine(ram, terminated, truncated)
+
+        # Apply STDP learning update only during training
+        if train:
+            self.stdp.step(d_pam, d_ppl1)
+
+        telemetry_info = dict(ram_info)
+        telemetry_info.update({
+            "action_source": self.action_source,
+            "model_jumps": self.model_jumps,
+            "assisted_jumps": self.assisted_jumps,
+            "bootstrap_active": self.bootstrap_active,
+        })
+
+        return {
+            "obs": obs,
+            "action_idx": action_idx,
+            "reward": reward,
+            "d_pam": d_pam,
+            "d_ppl1": d_ppl1,
+            "ram_info": ram_info,
+            "telemetry_info": telemetry_info,
+            "layer_acts": layer_acts,
+            "terminated": terminated,
+            "truncated": truncated,
+            "action_source": self.action_source,
+            "model_jumps": self.model_jumps,
+            "assisted_jumps": self.assisted_jumps,
+            "bootstrap_active": self.bootstrap_active,
+        }

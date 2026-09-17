@@ -23,7 +23,7 @@ class MarioRAMTracker:
         self.stagnant_steps = 0
 
     def get_x_pos(self, ram: np.ndarray) -> int:
-        page = int(ram[0x06D0]) if len(ram) > 0x06D0 else 0
+        page = int(ram[0x006D]) if len(ram) > 0x006D else 0
         sub_x = int(ram[0x0086]) if len(ram) > 0x0086 else 0
         return page * 256 + sub_x
 
