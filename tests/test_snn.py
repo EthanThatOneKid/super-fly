@@ -5,7 +5,7 @@ import os
 import tempfile
 
 from ram_tracker import MarioRAMTracker
-from connectome import DrosophilaConnectomeSNN
+from connectome import DrosophilaConnectomeSNN, LIFNeuronLayer
 from stdp import DualDopamineSTDP
 from simulation import Simulation, ACTION_MAP
 
@@ -35,6 +35,15 @@ class MockEnv:
 
 
 class TestSuperFlyRegression(unittest.TestCase):
+
+    def test_lif_current_centering_restores_relative_activity(self):
+        layer = LIFNeuronLayer(2, 2)
+        with torch.no_grad():
+            layer.weight.copy_(torch.tensor([[-1.0, -1.0], [-2.0, -2.0]]))
+
+        output = layer(torch.ones(2))
+
+        self.assertEqual(output.tolist(), [1.0, 0.0])
 
     def test_ram_tracker_x_pos(self):
         tracker = MarioRAMTracker()

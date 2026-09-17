@@ -48,6 +48,7 @@ class LIFNeuronLayer(nn.Module):
         """
         # Synaptic current
         current = torch.matmul(self.weight, input_spikes)
+        current = current - current.mean()
 
         # Membrane potential integration with leak
         # Reset potential for neurons that fired in the previous step
