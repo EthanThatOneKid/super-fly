@@ -142,6 +142,17 @@ python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
    (`stdp.py`). During bootstrap-assisted jumps, motor post-eligibility traces are
    injected so STDP teaches the motor layer appropriate jump timing.
 
+## How we teach the fly
+
+The fly is not given a recording of a human player or a list of correct button presses. We teach it with a constrained curriculum:
+
+1. **Keep moving right.** RIGHT is the default action, so the model can focus on learning when to jump instead of learning movement and jumping at the same time.
+2. **Create jump opportunities.** During the first 20 episodes, the controller adds short RIGHT+JUMP bootstrap pulses during the first 600 steps of each episode. Model-produced jumps take priority and are held for four frames.
+3. **Learn from consequences.** Each frame becomes visual spikes, the SNN chooses an action, and Mario's RAM reports the result. Forward progress produces PAM reward; stagnation and death produce PPL1 punishment; dopamine-modulated STDP adjusts the connections.
+4. **Remove the training wheels.** After the first 20 episodes, scheduled jump pulses stop. Model-selected jumps must carry the run, while telemetry distinguishes model jumps from bootstrap assistance.
+
+Bootstrap jumps are exploration, not demonstrations or proof that the model has learned jump timing. The meaningful test is whether model-selected jumps continue to improve progress after bootstrap assistance ends.
+
 ## Contributing
 
 Keep the shared brain logic in `simulation.py` and the entrypoints
