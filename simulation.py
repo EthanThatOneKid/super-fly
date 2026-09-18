@@ -158,8 +158,10 @@ class Simulation:
         spikes = self.preprocessor.generate_poisson_spikes(features)
 
         if train:
+            self.model.train()
             motor_spikes, layer_acts = self.model(spikes)
         else:
+            self.model.eval()
             with torch.no_grad():
                 motor_spikes, layer_acts = self.model(spikes)
 
