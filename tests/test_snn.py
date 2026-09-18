@@ -244,6 +244,63 @@ class TestSuperFlyRegression(unittest.TestCase):
             self.assertEqual(result["assisted_jumps"], 1)
             self.assertEqual(result["policy"], "bootstrap_only")
 
+    def test_homeostatic_plasticity_threshold_adaptation(self):
+        # Test silent neuron lowers threshold and hyperactive neuron raises threshold
+        layer = LIFNeuronLayer(2, 2, v_thresh=1.0, target_rate=0.05, eta_homeo=0.01)
+        layer.train()
+
+        # Force weight matrix so neuron 0 never spikes and neuron 1 always spikes
+        with torch.no_grad():
+            layer.weight.copy_(torch.tensor([[-10.0, -10.0], [10.0, 10.0]]))
+
+        initial_v_thresh = layer.v_thresh.clone()
+
+        # Step forward multiple times
+        for _ in range(50):
+            layer(torch.ones(2))
+
+        # Neuron 0 is silent -> rate_trace < target_rate -> threshold should decrease
+        self.assertLess(layer.v_thresh[0].item(), initial_v_thresh[0].item())
+        # Neuron 1 is hyperactive -> rate_trace > target_rate -> threshold should increase
+        self.assertGreater(layer.v_thresh[1].item(), initial_v_thresh[1].item())
+
+    def test_homeostasis_disabled_in_eval_mode(self):
+        layer = LIFNeuronLayer(2, 2, v_thresh=1.0)
+        layer.eval()
+
+        initial_v_thresh = layer.v_thresh.clone()
+        for _ in range(20):
+            layer(torch.ones(2))
+
+        torch.testing.assert_close(layer.v_thresh, initial_v_thresh)
+
+    def test_reset_homeostasis(self):
+        model = DrosophilaConnectomeSNN()
+        model.train()
+
+        for _ in range(10):
+            model(torch.rand(3920))
+
+        model.reset_homeostasis()
+
+        self.assertTrue(torch.allclose(model.layer1_2.v_thresh, torch.full_like(model.layer1_2.v_thresh, model.layer1_2.v_thresh_init)))
+        self.assertTrue(torch.all(model.layer1_2.rate_trace == 0))
+
+    def test_legacy_state_dict_loading(self):
+        model = DrosophilaConnectomeSNN()
+        state_dict = model.state_dict()
+
+        # Remove homeostatic keys to simulate legacy checkpoint
+        legacy_state_dict = {
+            k: v for k, v in state_dict.items()
+            if "v_thresh" not in k and "rate_trace" not in k
+        }
+
+        new_model = DrosophilaConnectomeSNN()
+        # Should load without missing key error due to custom _load_from_state_dict hook
+        new_model.load_state_dict(legacy_state_dict, strict=True)
+        self.assertEqual(new_model.layer1_2.v_thresh.shape, (256,))
+
 
 if __name__ == "__main__":
     unittest.main()

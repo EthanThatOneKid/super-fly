@@ -4,13 +4,17 @@ import numpy as np
 
 class LIFNeuronLayer(nn.Module):
     r"""
-    Leaky Integrate-and-Fire (LIF) Neuron Layer with support for eligibility traces.
+    Leaky Integrate-and-Fire (LIF) Neuron Layer with support for eligibility traces
+    and dynamic homeostatic intrinsic plasticity.
     V[t] = \alpha V[t-1] + I[t] - S[t-1] V_{reset}
     S[t] = \mathbb{I}(V[t] \ge V_{thresh})
     """
     def __init__(self, in_features: int, out_features: int,
                  tau_m: float = 20.0, v_thresh: float = 1.0,
-                 v_reset: float = 0.0, dt: float = 1.0):
+                 v_reset: float = 0.0, dt: float = 1.0,
+                 target_rate: float = 0.05, eta_homeo: float = 0.001,
+                 gamma_homeo: float = 0.01, v_thresh_min: float = 0.2,
+                 v_thresh_max: float = 5.0):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -20,13 +24,22 @@ class LIFNeuronLayer(nn.Module):
 
         # LIF parameters
         self.alpha = float(np.exp(-dt / tau_m))
-        self.v_thresh = v_thresh
+        self.v_thresh_init = float(v_thresh)
         self.v_reset = v_reset
         self.current_gain = 1.0
+
+        # Homeostatic intrinsic plasticity parameters
+        self.target_rate = target_rate
+        self.eta_homeo = eta_homeo
+        self.gamma_homeo = gamma_homeo
+        self.v_thresh_min = v_thresh_min
+        self.v_thresh_max = v_thresh_max
 
         # Dynamic states
         self.register_buffer('v', torch.zeros(out_features))
         self.register_buffer('spikes', torch.zeros(out_features))
+        self.register_buffer('v_thresh', torch.full((out_features,), self.v_thresh_init))
+        self.register_buffer('rate_trace', torch.zeros(out_features))
 
         # Eligibility traces for pre and post spikes (for 3-factor STDP)
         self.register_buffer('trace_pre', torch.zeros(in_features))
@@ -36,11 +49,34 @@ class LIFNeuronLayer(nn.Module):
         self.decay_trace = float(np.exp(-dt / self.tau_trace))
 
     def reset_state(self):
-        """Reset membrane potential and eligibility traces."""
+        """Reset membrane potential, eligibility traces, and firing rate trace."""
         self.v.zero_()
         self.spikes.zero_()
         self.trace_pre.zero_()
         self.trace_post.zero_()
+        self.rate_trace.zero_()
+
+    def reset_homeostasis(self):
+        """Reset dynamic thresholds and firing rate trace back to initial values."""
+        self.v_thresh.fill_(self.v_thresh_init)
+        self.rate_trace.zero_()
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        v_thresh_key = prefix + 'v_thresh'
+        if v_thresh_key in state_dict:
+            val = state_dict[v_thresh_key]
+            if val.dim() == 0:  # scalar tensor from older state dicts
+                state_dict[v_thresh_key] = torch.full((self.out_features,), val.item(), device=val.device)
+        else:
+            state_dict[v_thresh_key] = torch.full((self.out_features,), self.v_thresh_init)
+
+        rate_trace_key = prefix + 'rate_trace'
+        if rate_trace_key not in state_dict:
+            state_dict[rate_trace_key] = torch.zeros(self.out_features)
+
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
 
     def forward(self, input_spikes: torch.Tensor) -> torch.Tensor:
         """
@@ -64,6 +100,12 @@ class LIFNeuronLayer(nn.Module):
         # Update eligibility traces: trace = decay * trace + spike
         self.trace_pre = self.decay_trace * self.trace_pre + input_spikes
         self.trace_post = self.decay_trace * self.trace_post + self.spikes
+
+        # Homeostatic intrinsic plasticity: update threshold toward target firing rate during training
+        if self.training:
+            self.rate_trace = (1.0 - self.gamma_homeo) * self.rate_trace + self.gamma_homeo * self.spikes
+            delta_v = self.eta_homeo * (self.rate_trace - self.target_rate)
+            self.v_thresh = (self.v_thresh + delta_v).clamp(self.v_thresh_min, self.v_thresh_max)
 
         return self.spikes
 
@@ -100,6 +142,12 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.layer1_2.reset_state()
         self.layer2_3.reset_state()
         self.layer3_4.reset_state()
+
+    def reset_homeostasis(self):
+        """Reset threshold values and firing rate traces across all layers."""
+        self.layer1_2.reset_homeostasis()
+        self.layer2_3.reset_homeostasis()
+        self.layer3_4.reset_homeostasis()
 
     def forward(self, sensory_spikes: torch.Tensor):
         """
