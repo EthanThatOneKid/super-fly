@@ -137,6 +137,50 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.layer3_4 = LIFNeuronLayer(self.num_central_complex, self.num_motor_ganglion, tau_m=25.0)
         self.layer3_4.current_gain = 6.0
 
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """
+        Pre-training weight initialization heuristics for Drosophila connectome layers.
+        Structures sensory feature gain, optic-central pathways, and motor ganglion jump excitation
+        while maintaining zero-mean row alignment across weight matrices.
+        """
+        with torch.no_grad():
+            # Layer 1->2: Sensory Ommatidia to Optic Lobe
+            # Shape: (num_optic_lobe=256, num_inputs=3920)
+            w1 = torch.randn(self.num_optic_lobe, self.num_inputs) * (2.0 / self.num_inputs)**0.5
+            # Apply feature-gain weighting for Canny edges (ch 0) and RIGHT motion (ch 1)
+            # Channel ordering per ommatidium: 0=edges, 1=vx_right, 2=vx_left, 3=vy_down, 4=vy_up
+            reshaped_w1 = w1.view(self.num_optic_lobe, self.num_inputs // 5, 5)
+            reshaped_w1[:, :, 0] *= 1.25  # Edge sensitivity
+            reshaped_w1[:, :, 1] *= 1.25  # Right motion sensitivity
+            w1 = reshaped_w1.view(self.num_optic_lobe, self.num_inputs)
+            w1 -= w1.mean(dim=1, keepdim=True)
+            self.layer1_2.weight.copy_(w1)
+
+            # Layer 2->3: Optic Lobe to Central Complex / Mushroom Body
+            # Shape: (num_central_complex=128, num_optic_lobe=256)
+            w2 = torch.randn(self.num_central_complex, self.num_optic_lobe) * (2.0 / self.num_optic_lobe)**0.5
+            w2 -= w2.mean(dim=1, keepdim=True)
+            self.layer2_3.weight.copy_(w2)
+
+            # Layer 3->4: Central Complex to Thoracic Motor Ganglion
+            # Shape: (num_motor_ganglion=4, num_central_complex=128)
+            # Actions: [0: NOOP, 1: RIGHT, 2: JUMP, 3: RIGHT+JUMP]
+            w3 = torch.randn(self.num_motor_ganglion, self.num_central_complex) * (2.0 / self.num_central_complex)**0.5
+            half_cc = self.num_central_complex // 2
+            # Structure central complex interneuron pathways to excite movement and jump actions:
+            w3[0, :half_cc] -= 0.30  # NOOP suppression on primary pathways
+            w3[0, half_cc:] += 0.30
+            w3[1, :half_cc] += 0.15  # RIGHT motor excitation on primary pathways
+            w3[1, half_cc:] -= 0.15
+            w3[2, :half_cc] += 0.20  # JUMP motor excitation on primary pathways
+            w3[2, half_cc:] -= 0.20
+            w3[3, :half_cc] += 0.25  # RIGHT+JUMP motor excitation on primary pathways
+            w3[3, half_cc:] -= 0.25
+            w3 -= w3.mean(dim=1, keepdim=True)
+            self.layer3_4.weight.copy_(w3)
+
     def reset_state(self):
         """Reset internal state of all LIF layers."""
         self.layer1_2.reset_state()
