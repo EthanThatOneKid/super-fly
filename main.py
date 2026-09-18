@@ -66,7 +66,7 @@ def main():
             # Live Telemetry Rendering
             if args.render:
                 canvas = sim.telemetry.render_overlay(
-                    obs, outcome["layer_acts"], outcome["d_pam"], outcome["d_ppl1"], outcome["ram_info"]
+                    obs, outcome["layer_acts"], outcome["d_pam"], outcome["d_ppl1"], outcome["telemetry_info"]
                 )
                 cv2.imshow("Drosophila Fly Brain SNN Telemetry", canvas)
                 if cv2.waitKey(1) & 0xFF == ord('q'):

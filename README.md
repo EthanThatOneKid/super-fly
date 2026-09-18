@@ -17,7 +17,9 @@ browser in real time.
 - **Dual dopamine-modulated STDP** — PAM (reward/progress) and PPL1
   (punishment/death) pathways with an inverted update sign.
 - **RAM-based reward** — progress, stagnation, and death are read straight from
-  SMB RAM addresses.
+  SMB RAM addresses (`0x006D` level page, `0x0086` sub-page X, `0x000E` death state).
+- **Autonomous Jump & Bootstrap Controller** — model-driven jump priority with 4-frame hold and 24-step refractory timing, plus periodic bootstrap pulses and STDP teaching trace injection for assisted jumps.
+- **Deterministic Evaluation Harness** — isolated evaluation script (`eval_harness.py`) for benchmarking agent progress across episodes.
 - **Live web streaming dashboard** — MJPEG video feed + JSON stats endpoint via
   Flask, with the shared SNN core in `simulation.py`.
 
@@ -110,23 +112,39 @@ reached, in both CLI and web modes.
 | `connectome.py`  | `DrosophilaConnectomeSNN` + `LIFNeuronLayer`                         |
 | `stdp.py`        | `DualDopamineSTDP` — PAM/PPL1-modulated weight updates               |
 | `ram_tracker.py` | `MarioRAMTracker` — dopamine from SMB RAM (progress/death)           |
+| `eval_harness.py`| Isolated deterministic evaluation harness for SNN performance      |
 | `telemetry.py`   | `DrosophilaTelemetryOverlay` — layer heatmaps + dopamine gauges      |
 | `rom_importer.py`| Copies/imports a NES ROM into stable-retro's data dir               |
+
+## Evaluation & Testing
+
+Run the unit test suite:
+
+```sh
+python -m unittest discover -s tests
+```
+
+Run the deterministic evaluation harness (eval_mode with seed for reproducible evaluation trajectories without updating weights):
+
+```sh
+python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
+```
 
 ## How it works
 
 1. Each NES frame is converted to a synthetic ommatidial grid (28×28 × 5
    channels: edges, right/left motion, down/up motion) and then to Poisson
    spike trains.
-2. Spikes propagate through the 4-layer connectome (`connectome.py`); whichever
-   motor neuron fires (or `RIGHT` by default when none do) becomes the action.
+2. Spikes propagate through the 4-layer connectome (`connectome.py`); motor output
+   is filtered through jump hold/refractory timing.
 3. SMB RAM is read each step to produce PAM (progress) and PPL1 (death /
    stagnation) dopamine signals, which update weights via inverted-sign STDP
-   (`stdp.py`).
+   (`stdp.py`). During bootstrap-assisted jumps, motor post-eligibility traces are
+   injected so STDP teaches the motor layer appropriate jump timing.
 
 ## Contributing
 
 Keep the shared brain logic in `simulation.py` and the entrypoints
 (`main.py`, `web_server.py`) thin — they should only orchestrate loops, not
-reimplement the SNN wiring. Run `python -m py_compile` on changed modules; there
-is no test suite yet.
+reimplement the SNN wiring. Run `python -m py_compile` on changed modules, and
+run `python -m unittest discover -s tests` to verify unit test passes.
