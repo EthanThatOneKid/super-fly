@@ -63,12 +63,13 @@ class Simulation:
     """
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
-                 bootstrap_episodes=20, max_bootstrap_step=600, policy="agent"):
+                 bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent"):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
         self.bootstrap_episodes = bootstrap_episodes
         self.max_bootstrap_step = max_bootstrap_step
+        self.curriculum = curriculum
         if policy not in {"agent", "right_only", "bootstrap_only"}:
             raise ValueError(f"Unknown evaluation policy: {policy}")
         self.policy = policy
@@ -98,6 +99,27 @@ class Simulation:
             print(f"Loading existing model weights from {save_path}...")
             self.model.load_state_dict(torch.load(save_path))
 
+    def get_effective_max_bootstrap_step(self, episode: int) -> int:
+        """
+        Calculate effective max bootstrap step limit based on multi-stage curriculum schedule:
+        - Phase 1 (Full assistance): Initial episodes (ep <= bootstrap_episodes / 2) get full max_bootstrap_step.
+        - Phase 2 (Curriculum decay): Intermediate episodes linearly decay max bootstrap step limit.
+        - Phase 3 (Autonomous execution): Later episodes (ep > bootstrap_episodes) have 0 bootstrap step limit.
+        """
+        if episode <= 0 or self.bootstrap_episodes <= 0 or episode > self.bootstrap_episodes:
+            return 0
+        if not self.curriculum:
+            return self.max_bootstrap_step
+
+        phase1_episodes = max(1, self.bootstrap_episodes // 2)
+        if episode <= phase1_episodes:
+            return self.max_bootstrap_step
+
+        phase2_total = max(1, self.bootstrap_episodes - phase1_episodes)
+        phase2_ep = episode - phase1_episodes
+        decay_factor = max(0.0, 1.0 - (phase2_ep / phase2_total))
+        return int(self.max_bootstrap_step * decay_factor)
+
     def reset_episode(self, env):
         """Reset the environment and all temporal simulation state for a new episode."""
         obs, _ = env.reset()
@@ -115,7 +137,8 @@ class Simulation:
         self.action_source = "right"
         self.model_jumps = 0
         self.assisted_jumps = 0
-        self.bootstrap_active = self.policy != "right_only" and self.current_episode <= self.bootstrap_episodes
+        effective_max = self.get_effective_max_bootstrap_step(self.current_episode)
+        self.bootstrap_active = self.policy != "right_only" and effective_max > 0
 
         return obs
 
@@ -152,7 +175,8 @@ class Simulation:
         action_source, model_jumps, assisted_jumps, bootstrap_active.
         """
         self.current_step += 1
-        self.bootstrap_active = self.policy != "right_only" and self.current_episode <= self.bootstrap_episodes and self.current_step <= self.max_bootstrap_step
+        effective_max = self.get_effective_max_bootstrap_step(self.current_episode)
+        self.bootstrap_active = self.policy != "right_only" and effective_max > 0 and self.current_step <= effective_max
 
         features, _ = self.preprocessor.process_frame(obs)
         spikes = self.preprocessor.generate_poisson_spikes(features)

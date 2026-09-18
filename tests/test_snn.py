@@ -274,6 +274,55 @@ class TestSuperFlyRegression(unittest.TestCase):
 
         torch.testing.assert_close(layer.v_thresh, initial_v_thresh)
 
+    def test_weight_initialization_heuristics(self):
+        model = DrosophilaConnectomeSNN()
+
+        # Verify shapes
+        self.assertEqual(model.layer1_2.weight.shape, (256, 3920))
+        self.assertEqual(model.layer2_3.weight.shape, (128, 256))
+        self.assertEqual(model.layer3_4.weight.shape, (4, 128))
+
+        # Verify zero-mean row centering across all layers
+        for layer in (model.layer1_2, model.layer2_3, model.layer3_4):
+            row_means = layer.weight.mean(dim=1)
+            self.assertTrue(torch.allclose(row_means, torch.zeros_like(row_means), atol=1e-5))
+
+        # Verify elevated excitation bias for motor neurons (RIGHT, JUMP, RIGHT+JUMP vs NOOP) on primary central complex pathways
+        w3 = model.layer3_4.weight
+        half_cc = 64
+        noop_primary = w3[0, :half_cc].mean().item()
+        right_primary = w3[1, :half_cc].mean().item()
+        jump_primary = w3[2, :half_cc].mean().item()
+        right_jump_primary = w3[3, :half_cc].mean().item()
+
+        self.assertGreater(right_primary, noop_primary)
+        self.assertGreater(jump_primary, noop_primary)
+        self.assertGreater(right_jump_primary, noop_primary)
+
+    def test_curriculum_decay_schedule(self):
+        sim = Simulation(bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True)
+
+        # Phase 1: Episodes 1-10 receive full max_bootstrap_step
+        self.assertEqual(sim.get_effective_max_bootstrap_step(1), 600)
+        self.assertEqual(sim.get_effective_max_bootstrap_step(10), 600)
+
+        # Phase 2: Episodes 11-20 linearly decay max bootstrap step
+        step_11 = sim.get_effective_max_bootstrap_step(11)
+        step_15 = sim.get_effective_max_bootstrap_step(15)
+        step_20 = sim.get_effective_max_bootstrap_step(20)
+
+        self.assertLess(step_11, 600)
+        self.assertLess(step_15, step_11)
+        self.assertLess(step_20, step_15)
+
+        # Phase 3: Episode 21+ has 0 bootstrap step limit
+        self.assertEqual(sim.get_effective_max_bootstrap_step(21), 0)
+        self.assertEqual(sim.get_effective_max_bootstrap_step(50), 0)
+
+        # Curriculum disabled check
+        sim_no_curr = Simulation(bootstrap_episodes=20, max_bootstrap_step=600, curriculum=False)
+        self.assertEqual(sim_no_curr.get_effective_max_bootstrap_step(15), 600)
+
     def test_reset_homeostasis(self):
         model = DrosophilaConnectomeSNN()
         model.train()
