@@ -86,6 +86,119 @@ class TestSuperFlyRegression(unittest.TestCase):
         ram[0x000E] = 0x08 # Normal state
         self.assertFalse(tracker.is_dead(ram))
 
+    def test_milestone_progression_rewards(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0700, dtype=np.uint8)
+
+        # Initial position
+        ram[0x006D] = 0 # Page 0
+        ram[0x0086] = 10 # Sub X 10
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertEqual(info['sub_page'], 0)
+        self.assertEqual(info['page'], 0)
+
+        # Advance to sub-page 1 (x_pos = 64)
+        ram[0x0086] = 64
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertGreaterEqual(d_pam, 0.3)
+        self.assertEqual(info['sub_page'], 1)
+        self.assertEqual(info['max_sub_page'], 1)
+
+        # Advance to page 1 (x_pos = 256)
+        ram[0x006D] = 1 # Page 1
+        ram[0x0086] = 0
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertGreaterEqual(d_pam, 0.5)
+        self.assertEqual(info['page'], 1)
+        self.assertEqual(info['max_page'], 1)
+
+    def test_obstacle_clearance_rewards(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0700, dtype=np.uint8)
+
+        # Ground position x = 100
+        ram[0x006D] = 0
+        ram[0x0086] = 100
+        ram[0x001D] = 0 # Ground
+        tracker.compute_dopamine(ram, False, False)
+
+        # Airborne jump start at x = 100
+        ram[0x001D] = 1 # Airborne
+        ram[0x0086] = 105
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertTrue(info['is_airborne'])
+
+        # Mid-air forward progress past obstacle threshold (distance >= 24)
+        ram[0x0086] = 128
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertGreaterEqual(d_pam, 0.4)
+
+        # Landing
+        ram[0x001D] = 0 # On ground
+        ram[0x0086] = 130
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertFalse(info['is_airborne'])
+
+    def test_collision_speed_drop_punishment(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0700, dtype=np.uint8)
+
+        # Moving forward fast on ground
+        ram[0x0086] = 10
+        tracker.compute_dopamine(ram, False, False)
+
+        ram[0x0086] = 15 # Speed = 5
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertEqual(info['current_speed'], 5)
+
+        # Abrupt collision stop (Speed = 0)
+        ram[0x0086] = 15
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertGreaterEqual(d_ppl1, 0.3)
+        self.assertEqual(info['current_speed'], 0)
+
+    def test_mid_jump_stagnation_punishment(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0700, dtype=np.uint8)
+
+        # Airborne at x = 50
+        ram[0x001D] = 1 # Airborne
+        ram[0x0086] = 50
+        tracker.compute_dopamine(ram, False, False)
+
+        # Mid-jump with zero forward movement
+        ram[0x0086] = 50
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertGreaterEqual(d_ppl1, 0.2)
+        self.assertTrue(info['is_airborne'])
+
+    def test_stdp_dopamine_weight_updates(self):
+        model = DrosophilaConnectomeSNN()
+        stdp = DualDopamineSTDP(model, lr=0.01)
+
+        # Set non-uniform eligibility traces to prevent row-mean subtraction cancellation
+        with torch.no_grad():
+            model.layer1_2.trace_post.fill_(1.0)
+            model.layer1_2.trace_pre.zero_()
+            model.layer1_2.trace_pre[:1000] = 1.0
+
+        initial_w = model.layer1_2.weight.clone()
+
+        # PAM positive reward (d_pam = 1.0, d_ppl1 = 0.0)
+        stdp.step(1.0, 0.0)
+        self.assertEqual(stdp.last_dopamine_signal, 1.0)
+
+        # Inverted update sign: \Delta w = - \eta * D * E
+        # D = 1.0 -> weight values should update
+        self.assertFalse(torch.allclose(model.layer1_2.weight, initial_w))
+
+        w_after_pam = model.layer1_2.weight.clone()
+
+        # PPL1 aversive punishment (d_pam = 0.0, d_ppl1 = 1.0)
+        stdp.step(0.0, 1.0)
+        self.assertEqual(stdp.last_dopamine_signal, -1.0)
+        self.assertFalse(torch.allclose(model.layer1_2.weight, w_after_pam))
+
     def test_jump_refractory_and_hold(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             save_path = os.path.join(tmpdir, "test_model.pth")
