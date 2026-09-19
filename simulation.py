@@ -1,5 +1,6 @@
 import os
-
+import random
+import numpy as np
 import torch
 
 from vision import OmmatidiaVisionPreprocessor
@@ -8,6 +9,7 @@ from stdp import DualDopamineSTDP
 from ram_tracker import MarioRAMTracker
 from rom_importer import import_nes_rom
 from telemetry import DrosophilaTelemetryOverlay
+from storage import RunStorage
 
 DEFAULT_ROM_PATH = "roms/Super Mario Bros. (World).nes"
 DEFAULT_SAVE_PATH = "drosophila_snn.pth"
@@ -68,13 +70,14 @@ class Simulation:
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
                  bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
-                 states=None):
+                 states=None, runs_dir="runs", run_id=None, seed=None):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
         self.bootstrap_episodes = bootstrap_episodes
         self.max_bootstrap_step = max_bootstrap_step
         self.curriculum = curriculum
+        self.seed = seed
         if policy not in {"agent", "right_only", "bootstrap_only"}:
             raise ValueError(f"Unknown evaluation policy: {policy}")
         self.policy = policy
@@ -88,6 +91,17 @@ class Simulation:
         if not self.states:
             self.states = ["Level1-1"]
         self.current_state = self.states[0]
+
+        # Peek at save_path if present to check for existing run_id
+        if run_id is None and os.path.exists(save_path):
+            try:
+                peek_payload = torch.load(save_path, weights_only=False)
+                if isinstance(peek_payload, dict) and "run_id" in peek_payload:
+                    run_id = peek_payload["run_id"]
+            except Exception:
+                pass
+
+        self.run_storage = RunStorage(runs_dir=runs_dir, run_id=run_id)
 
         self.preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
         self.model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
@@ -110,9 +124,92 @@ class Simulation:
         self.assisted_jumps = 0
         self.bootstrap_active = False
 
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+
         if os.path.exists(save_path):
             print(f"Loading existing model weights from {save_path}...")
-            self.model.load_state_dict(torch.load(save_path))
+            self.run_storage.migrate_legacy_checkpoint(save_path)
+            self.load_checkpoint(save_path)
+
+    def load_checkpoint(self, path_or_dir=None):
+        """Load full simulation state from a checkpoint path or run directory."""
+        payload = self.run_storage.load_checkpoint(path_or_dir)
+
+        if isinstance(payload, dict) and "model_state_dict" in payload:
+            # Rebind run_storage to loaded run_id if adopting existing run identity
+            if "run_id" in payload and payload["run_id"] and self.run_storage.run_id != payload["run_id"]:
+                self.run_storage = RunStorage(
+                    runs_dir=self.run_storage.runs_dir,
+                    run_id=payload["run_id"],
+                    tenant_scope=payload.get("tenant_scope", "default"),
+                    repository_id=payload.get("repository_id", "super-fly"),
+                )
+
+            self.model.load_state_dict(payload["model_state_dict"])
+            if "episode" in payload:
+                self.current_episode = payload["episode"]
+            if "step" in payload:
+                self.current_step = payload["step"]
+            if "best_x" in payload:
+                self.best_x = payload["best_x"]
+
+            # Restore policy configuration if serialized
+            if "policy_config" in payload:
+                p_cfg = payload["policy_config"]
+                if "policy" in p_cfg:
+                    self.policy = p_cfg["policy"]
+                if "lr" in p_cfg:
+                    self.lr = p_cfg["lr"]
+                    self.stdp.lr = self.lr
+                if "seed" in p_cfg and p_cfg["seed"] is not None:
+                    self.seed = p_cfg["seed"]
+
+            # Restore curriculum control state if serialized
+            if "curriculum_state" in payload:
+                cs = payload["curriculum_state"]
+                self.current_state = cs.get("current_state", self.current_state)
+                self.states = cs.get("states", self.states)
+                self.curriculum = cs.get("curriculum", self.curriculum)
+                self.bootstrap_episodes = cs.get("bootstrap_episodes", self.bootstrap_episodes)
+                self.max_bootstrap_step = cs.get("max_bootstrap_step", self.max_bootstrap_step)
+
+            if "rng_states" in payload:
+                rngs = payload["rng_states"]
+                if rngs.get("python") is not None:
+                    random.setstate(rngs["python"])
+                if rngs.get("numpy") is not None:
+                    np.random.set_state(rngs["numpy"])
+                if rngs.get("torch") is not None:
+                    torch.set_rng_state(rngs["torch"])
+                if rngs.get("torch_cuda") is not None and torch.cuda.is_available():
+                    torch.cuda.set_rng_state_all(rngs["torch_cuda"])
+        else:
+            self.model.load_state_dict(payload)
+
+    def save_checkpoint(self, path=None, is_best=False):
+        """Atomically persist simulation state to latest_checkpoint.pth and option best_checkpoint.pth."""
+        target_path = path if path is not None else self.save_path
+        self.run_storage.save_checkpoint(
+            self,
+            is_best=is_best,
+            save_path=target_path,
+            seed=self.seed,
+        )
+
+    def maybe_save_record(self):
+        """Persist model weights when a new best distance is reached.
+
+        Returns True if a new record was set this call.
+        """
+        x = self.ram_tracker.max_x_pos
+        if x <= self.best_x:
+            return False
+        self.best_x = x
+        self.save_checkpoint(is_best=True)
+        return True
 
     def get_effective_max_bootstrap_step(self, episode: int) -> int:
         """
@@ -175,25 +272,6 @@ class Simulation:
         self.bootstrap_active = self.policy != "right_only" and effective_max > 0
 
         return obs
-
-    def save_checkpoint(self, path=None):
-        """Atomically persist SNN weights to disk."""
-        target_path = path if path is not None else self.save_path
-        tmp_path = f"{target_path}.tmp"
-        torch.save(self.model.state_dict(), tmp_path)
-        os.replace(tmp_path, target_path)
-
-    def maybe_save_record(self):
-        """Persist model weights when a new best distance is reached.
-
-        Returns True if a new record was set this call.
-        """
-        x = self.ram_tracker.max_x_pos
-        if x <= self.best_x:
-            return False
-        self.best_x = x
-        self.save_checkpoint()
-        return True
 
     def step(self, env, obs, train: bool = True):
         """Advance the agent by one step.
@@ -297,6 +375,7 @@ class Simulation:
             "ram_info": ram_info,
             "telemetry_info": telemetry_info,
             "layer_acts": layer_acts,
+            "terminated": terminated,
             "terminated": terminated,
             "truncated": truncated,
             "action_source": self.action_source,
