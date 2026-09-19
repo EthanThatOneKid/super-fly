@@ -89,6 +89,25 @@ class TestSuperFlyRegression(unittest.TestCase):
         ram[0x000E] = 0x08 # Normal state
         self.assertFalse(tracker.is_dead(ram))
 
+    def test_ram_tracker_level_completion_requires_persistence(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0800, dtype=np.uint8)
+        ram[0x006D] = 12
+        ram[0x0086] = 194
+        ram[0x000E] = 0x05
+
+        for _ in range(29):
+            self.assertFalse(tracker.update_completion(ram))
+        self.assertFalse(tracker.level_complete)
+        self.assertTrue(tracker.update_completion(ram))
+        self.assertEqual(tracker.completion_streak, 30)
+
+        tracker.reset()
+        ram[0x000E] = 0x08
+        for _ in range(40):
+            self.assertFalse(tracker.update_completion(ram))
+        self.assertFalse(tracker.level_complete)
+
     def test_milestone_progression_rewards(self):
         tracker = MarioRAMTracker()
         ram = np.zeros(0x0700, dtype=np.uint8)

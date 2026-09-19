@@ -2,6 +2,11 @@ import numpy as np
 import torch
 from typing import Tuple, Dict, Any
 
+LEVEL_END_MIN_X = 3200
+LEVEL_END_PLAYER_STATE = 0x05
+LEVEL_COMPLETE_PERSISTENCE = 30
+
+
 class MarioRAMTracker:
     """
     Extracts Mario's state (horizontal position, death, level completion, airborne state, velocity)
@@ -25,6 +30,9 @@ class MarioRAMTracker:
         self.in_air = False
         self.jump_start_x = 0
         self.cleared_obstacle = False
+        self.completion_streak = 0
+        self.level_complete = False
+        self.completion_reward_emitted = False
 
     def reset(self):
         self.max_x_pos = 0
@@ -36,6 +44,9 @@ class MarioRAMTracker:
         self.in_air = False
         self.jump_start_x = 0
         self.cleared_obstacle = False
+        self.completion_streak = 0
+        self.level_complete = False
+        self.completion_reward_emitted = False
 
     def get_x_pos(self, ram: np.ndarray) -> int:
         page = int(ram[0x006D]) if len(ram) > 0x006D else 0
@@ -61,6 +72,22 @@ class MarioRAMTracker:
                 return True
         return False
 
+    def get_player_state(self, ram: np.ndarray) -> int:
+        return int(ram[0x000E]) if len(ram) > 0x000E else 0
+
+    def get_oper_mode(self, ram: np.ndarray) -> int:
+        return int(ram[0x0770]) if len(ram) > 0x0770 else 0
+
+    def update_completion(self, ram: np.ndarray) -> bool:
+        qualifying_frame = (
+            self.get_x_pos(ram) >= LEVEL_END_MIN_X
+            and self.get_player_state(ram) == LEVEL_END_PLAYER_STATE
+        )
+        self.completion_streak = self.completion_streak + 1 if qualifying_frame else 0
+        if self.completion_streak >= LEVEL_COMPLETE_PERSISTENCE:
+            self.level_complete = True
+        return self.level_complete
+
     def compute_dopamine(self, ram: np.ndarray, terminated: bool, truncated: bool) -> Tuple[float, float, Dict[str, Any]]:
         """
         Computes PAM (positive reward) and PPL1 (aversive punishment) dopamine signals.
@@ -76,6 +103,7 @@ class MarioRAMTracker:
         d_ppl1_stagnation = 0.0
         d_ppl1_collision = 0.0
         d_ppl1_death = 0.0
+        d_pam_completion = 0.0
 
         current_speed = x_pos - self.last_x_pos if self.last_x_pos > 0 else 0
 
@@ -132,19 +160,27 @@ class MarioRAMTracker:
         if not airborne and self.last_speed >= 2 and current_speed <= 0 and not self.is_dead(ram) and not terminated:
             d_ppl1_collision = min(1.0, d_ppl1_collision + 0.3)
 
+        if self.level_complete and not self.completion_reward_emitted:
+            d_pam_completion = 1.0
+            self.completion_reward_emitted = True
+
         # 4. Death or Termination (PPL1)
-        if self.is_dead(ram) or terminated:
+        if self.is_dead(ram) or (terminated and not self.level_complete):
             d_ppl1_death = 1.0
 
         self.last_speed = current_speed
         self.last_x_pos = x_pos
 
-        d_pam = float(np.clip(d_pam_progress + d_pam_obstacle, 0.0, 1.0))
+        d_pam = float(np.clip(d_pam_progress + d_pam_obstacle + d_pam_completion, 0.0, 1.0))
         d_ppl1 = float(np.clip(d_ppl1_stagnation + d_ppl1_collision + d_ppl1_death, 0.0, 1.0))
 
         info = {
             'x_pos': x_pos,
             'max_x_pos': self.max_x_pos,
+            'player_state': self.get_player_state(ram),
+            'oper_mode': self.get_oper_mode(ram),
+            'level_complete': self.level_complete,
+            'completion_streak': self.completion_streak,
             'stagnant_steps': self.stagnant_steps,
             'sub_page': x_pos // 64,
             'max_sub_page': self.max_sub_page,
@@ -155,6 +191,7 @@ class MarioRAMTracker:
             'dopamine_breakdown': {
                 'progress': float(np.clip(d_pam_progress, 0.0, 1.0)),
                 'obstacle_clearance': float(np.clip(d_pam_obstacle, 0.0, 1.0)),
+                'completion': float(np.clip(d_pam_completion, 0.0, 1.0)),
                 'stagnation': float(np.clip(d_ppl1_stagnation, 0.0, 1.0)),
                 'collision': float(np.clip(d_ppl1_collision, 0.0, 1.0)),
                 'death': float(np.clip(d_ppl1_death, 0.0, 1.0)),
