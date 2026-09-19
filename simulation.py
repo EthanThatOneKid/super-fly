@@ -72,7 +72,8 @@ class Simulation:
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
                  bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
-                 states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS):
+                 states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS,
+                 hold_jump_frames=14):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
@@ -87,6 +88,7 @@ class Simulation:
         if not (1 <= settle_steps <= MAX_SETTLE_STEPS):
             raise ValueError(f"settle_steps must be between 1 and {MAX_SETTLE_STEPS}")
         self.settle_steps = settle_steps
+        self.hold_jump_frames = hold_jump_frames
 
         if states is None:
             self.states = ["Level1-1"]
@@ -328,7 +330,7 @@ class Simulation:
             action_source = "model_hold"
         elif jump_requested and self.refractory_counter == 0:
             execute_jump = True
-            self.hold_jump_counter = 3  # Hold for 4 frames total (current frame + 3)
+            self.hold_jump_counter = self.hold_jump_frames - 1  # Hold for hold_jump_frames total
             self.refractory_counter = 24  # 24-step refractory period
             action_source = "model"
             self.model_jumps += 1

@@ -245,8 +245,8 @@ class TestSuperFlyRegression(unittest.TestCase):
             self.assertEqual(res1["action_source"], "model")
             self.assertEqual(res1["model_jumps"], 1)
 
-            # Subsequent 3 steps should hold the jump
-            for _ in range(3):
+            # Subsequent hold steps should hold the jump
+            for _ in range(sim.hold_jump_frames - 1):
                 res = sim.step(env, obs)
                 self.assertEqual(res["action_idx"], 3)
                 self.assertEqual(res["action_source"], "model_hold")
