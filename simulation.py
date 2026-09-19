@@ -16,13 +16,13 @@ DEFAULT_SAVE_PATH = "drosophila_snn.pth"
 DEFAULT_LR = 0.005
 DEFAULT_MAX_STEPS = 2000
 
-# NES Action mapping: [NOOP, RIGHT, JUMP, RIGHT+JUMP]
+# NES Action mapping: [NOOP, RIGHT+RUN, JUMP, RIGHT+RUN+JUMP]
 # NES retro action array (12 buttons): [B, Y, SELECT, START, UP, DOWN, LEFT, RIGHT, A, MODE, L, R]
 ACTION_MAP = [
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # 0: NOOP
-    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],  # 1: RIGHT
+    [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],  # 1: RIGHT + B run
     [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],  # 2: JUMP (A button)
-    [1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],  # 3: RIGHT + JUMP (A button + RIGHT + B run)
+    [1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0],  # 3: RIGHT + JUMP (A button + B run)
 ]
 
 DEFAULT_ACTION = 1  # Default to RIGHT when no motor neurons fire
@@ -345,9 +345,10 @@ class Simulation:
         obs, reward, terminated, truncated, _ = env.step(ACTION_MAP[action_idx])
 
         ram = env.get_ram()
-        # Override terminated if SMB death state detected in RAM
+        # Override termination with RAM-level death or stable Level 1-1 completion detection.
         died = self.ram_tracker.is_dead(ram)
-        if died:
+        completed = self.ram_tracker.update_completion(ram)
+        if died or completed:
             terminated = True
 
         d_pam, d_ppl1, ram_info = self.ram_tracker.compute_dopamine(ram, terminated, truncated)
@@ -364,6 +365,7 @@ class Simulation:
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
             "died": died,
+            "completed": completed,
         })
 
         return {
@@ -384,4 +386,5 @@ class Simulation:
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
             "died": died,
+            "completed": completed,
         }
