@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from pretrain import target_rate_vector
+from pretrain import target_rate_vector, pretrain_motor_layer
 from trajectory import iter_dataset, write_shard
 
 
@@ -46,6 +46,25 @@ class TestTrainingPipeline(unittest.TestCase):
                 handle.write(b"tampered")
             with self.assertRaises(ValueError):
                 list(iter_dataset(tmpdir))
+
+    def test_sequence_aware_pretraining_and_settling_bounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            frames = [np.zeros((240, 256, 3), dtype=np.uint8) for _ in range(5)]
+            actions = [1, 1, 3, 3, 1]
+            ram = [np.zeros(0x800, dtype=np.uint8) for _ in range(5)]
+            write_shard(tmpdir, frames, actions, ram, [False]*5, [False]*5, {"level": "Level1-1"})
+
+            # Test invalid settle_steps bounds
+            with self.assertRaises(ValueError):
+                pretrain_motor_layer(tmpdir, settle_steps=0)
+            with self.assertRaises(ValueError):
+                pretrain_motor_layer(tmpdir, settle_steps=11)
+
+            # Test valid sequence-aware pretraining
+            model, metadata = pretrain_motor_layer(tmpdir, epochs=2, settle_steps=3, seed=42)
+            self.assertEqual(metadata["settle_steps"], 3)
+            self.assertEqual(metadata["samples"], 5)
+            self.assertEqual(metadata["updates"], 10)
 
 
 if __name__ == "__main__":

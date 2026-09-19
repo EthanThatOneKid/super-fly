@@ -452,6 +452,7 @@ class RunStorage:
         policy_config = {
             "policy": getattr(simulation, "policy", "agent"),
             "lr": getattr(simulation, "lr", 0.005),
+            "settle_steps": getattr(simulation, "settle_steps", 3),
             "seed": seed,
         }
 
