@@ -239,6 +239,16 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             self.assertEqual(len(proj_files), 1)
             self.assertEqual(len(idem_files), 1)
 
+    def test_path_components_reject_traversal(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaises(ValueError):
+                RunStorage(runs_dir=tmpdir, run_id="../escaped")
+            storage = RunStorage(runs_dir=tmpdir, run_id="run_safe")
+            with self.assertRaises(ValueError):
+                storage.record_event("event", {}, idempotency_key="../../escaped")
+            with self.assertRaises(ValueError):
+                storage.record_event("event", {}, event_id="../escaped")
+
     def test_reopening_run_recovers_sequence_projection(self):
         """Verify reopening an existing run_id recovers the next sequence sequence and appends history."""
         with tempfile.TemporaryDirectory() as tmpdir:

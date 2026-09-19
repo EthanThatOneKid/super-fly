@@ -16,6 +16,12 @@ MAX_STORAGE_BYTES = 100 * 1024 * 1024  # 100 MB
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "waiting", "expired"}
 
 
+def validate_path_component(value: str, name: str) -> str:
+    if not isinstance(value, str) or not value or value in {".", ".."} or "\x00" in value or os.path.basename(value) != value:
+        raise ValueError(f"{name} must be a single safe path component")
+    return value
+
+
 def get_git_commit_sha() -> str:
     """Safely retrieve the current git commit SHA if in a git repository."""
     try:
@@ -154,15 +160,15 @@ class RunStorage:
     ):
         self.runs_dir = os.path.abspath(runs_dir)
         os.makedirs(self.runs_dir, exist_ok=True)
-        self.tenant_scope = tenant_scope
-        self.repository_id = repository_id
+        self.tenant_scope = validate_path_component(tenant_scope, "tenant_scope")
+        self.repository_id = validate_path_component(repository_id, "repository_id")
 
         if run_id is None:
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             rand_suffix = os.urandom(3).hex()
             run_id = f"run_{timestamp}_{rand_suffix}"
 
-        self.run_id = run_id
+        self.run_id = validate_path_component(run_id, "run_id")
         self.run_dir = os.path.join(self.runs_dir, self.run_id)
         os.makedirs(self.run_dir, exist_ok=True)
 
@@ -269,6 +275,10 @@ class RunStorage:
         Rejects overwrites if allow_overwrite is False and handles duplicate deliveries safely.
         """
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if event_id is not None:
+            validate_path_component(event_id, "event_id")
+        if idempotency_key is not None:
+            validate_path_component(idempotency_key, "idempotency_key")
 
         # Atomic idempotency claim
         if idempotency_key:
