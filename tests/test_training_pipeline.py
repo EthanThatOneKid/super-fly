@@ -5,15 +5,11 @@ import unittest
 
 import numpy as np
 
-from pretrain import target_rate_vector, pretrain_motor_layer
+from pretrain import pretrain_motor_layer
 from trajectory import iter_dataset, write_shard
 
 
 class TestTrainingPipeline(unittest.TestCase):
-    def test_target_rate_vector(self):
-        target = target_rate_vector(3)
-        np.testing.assert_allclose(target.numpy(), [0.05, 0.05, 0.05, 0.9])
-
     def test_trajectory_manifest_and_round_trip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             frames = [np.zeros((2, 3, 3), dtype=np.uint8), np.ones((2, 3, 3), dtype=np.uint8)]
@@ -61,10 +57,15 @@ class TestTrainingPipeline(unittest.TestCase):
                 pretrain_motor_layer(tmpdir, settle_steps=11)
 
             # Test valid sequence-aware pretraining
-            model, metadata = pretrain_motor_layer(tmpdir, epochs=2, settle_steps=3, seed=42)
+            model, metadata = pretrain_motor_layer(tmpdir, epochs=2, settle_steps=3, seed=42, chunk_size=2)
             self.assertEqual(metadata["settle_steps"], 3)
-            self.assertEqual(metadata["samples"], 5)
-            self.assertEqual(metadata["updates"], 10)
+            self.assertEqual(metadata["samples"], 10)
+            self.assertEqual(metadata["pretraining"], "sequence_bptt_surrogate")
+
+            # Verify weight constraints (row zero-mean)
+            for layer in [model.layer1_2, model.layer2_3, model.layer3_4, model.feedback_3_2]:
+                row_means = layer.weight.mean(dim=1)
+                np.testing.assert_allclose(row_means.detach().numpy(), 0.0, atol=1e-5)
 
 
 if __name__ == "__main__":
