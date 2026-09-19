@@ -24,8 +24,6 @@ def parse_args():
     parser.add_argument("--port", type=int, default=5000, help="Port for web browser dashboard")
     parser.add_argument("--lr", type=float, default=DEFAULT_LR, help="Learning rate for dopamine STDP")
     parser.add_argument("--save-path", type=str, default=DEFAULT_SAVE_PATH, help="Path to save/load SNN model weights")
-    parser.add_argument("--runs-dir", type=str, default="runs", help="Directory for durable run storage and manifests")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for PyTorch, NumPy, and Python")
     parser.add_argument("--no-curriculum", action="store_true", help="Disable structured curriculum bootstrap decay")
     parser.add_argument("--states", type=str, default="Level1-1", help="Comma-separated list of level states for multi-level curriculum (e.g. Level1-1,Level1-2,Level1-3)")
     return parser.parse_args()
@@ -51,15 +49,7 @@ def main():
         print("Please pass your Super Mario Bros NES ROM file via '--rom path/to/rom.nes' to initialize the environment.")
         sys.exit(1)
 
-    sim = Simulation(
-        rom_path=args.rom,
-        save_path=args.save_path,
-        lr=args.lr,
-        curriculum=not args.no_curriculum,
-        states=states_list,
-        runs_dir=args.runs_dir,
-        seed=args.seed,
-    )
+    sim = Simulation(rom_path=args.rom, save_path=args.save_path, lr=args.lr, curriculum=not args.no_curriculum, states=states_list)
 
     print(f"Starting Drosophila Melanogaster SNN Training Loop on {game_id}...")
 
@@ -99,7 +89,6 @@ def main():
 
         print(f"Episode {episode}/{args.episodes} | Steps: {step} | Max X: {x_reached} | Best X: {sim.best_x} | PAM: {ep_pam:.2f} | PPL1: {ep_ppl1:.2f}")
 
-    sim.run_storage.set_status("completed")
     env.close()
     if args.render:
         cv2.destroyAllWindows()

@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run_20260919_073831_6e68f0",
+  "tenant_scope": "default",
+  "repository_id": "super-fly",
+  "status": "active",
+  "created_at": "2026-09-19T07:38:31Z",
+  "updated_at": "2026-09-19T07:38:32Z",
+  "git_commit_sha": "0ac69d4ee1a981b1fc8c40e331af4811254ab1f5",
+  "policy_config": {
+    "policy": "agent",
+    "lr": 0.005,
+    "seed": null
+  },
+  "legacy_backup": {
+    "path": "/tmp/tmpt0p052yp/test_model.pth.bak.20260919_073832",
+    "relative_path": "../../../tmp/tmpt0p052yp/test_model.pth.bak.20260919_073832",
+    "sha256": "7fb2f0ba33a40d1aba21dd750a79a95efb10f66e6656b4e55e456ffe49dff11f",
+    "timestamp": "2026-09-19T07:38:32Z"
+  },
+  "checkpoints": {
+    "latest": {
+      "filename": "latest_checkpoint.pth",
+      "sha256": "981c3c516cb6976b69f27424a577fbfa3a7094c51c2e1f7e40fa7bd356c1b13c",
+      "episode": 0,
+      "step": 0,
+      "best_x": 0,
+      "updated_at": "2026-09-19T07:38:31Z"
+    }
+  }
+}

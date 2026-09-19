@@ -2,7 +2,3 @@ __pycache__/
 *.pyc
 .pytest_cache/
 drosophila_snn.pth
-drosophila_snn.pth.bak*
-runs/
-run-history/
-*.pth

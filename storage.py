@@ -1,6 +1,4 @@
 import hashlib
-import fcntl
-from contextlib import contextmanager
 import json
 import os
 import random
@@ -221,6 +219,42 @@ class RunStorage:
         )
         return summary.to_dict()
 
+    def _has_projection_for_event(self, event_id: str) -> bool:
+        """Check whether a projection referencing event_id already exists."""
+        if not os.path.exists(self.projections_dir):
+            return False
+        for fname in os.listdir(self.projections_dir):
+            if fname.endswith(".json"):
+                try:
+                    with open(os.path.join(self.projections_dir, fname), "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("event_id") == event_id:
+                        return True
+                except Exception:
+                    continue
+        return False
+
+    def _write_projection_if_missing(self, event_id: str, event_type: str) -> None:
+        """Write sequence projection deduplicating by event_id."""
+        if self._has_projection_for_event(event_id):
+            return
+
+        written = False
+        while not written:
+            self.projection_sequence += 1
+            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
+            try:
+                atomic_write_json(
+                    {"sequence": self.projection_sequence, "event_id": event_id, "type": event_type},
+                    proj_file,
+                    allow_overwrite=False,
+                )
+                written = True
+            except FileExistsError:
+                # Check if someone else wrote projection for event_id in the meantime
+                if self._has_projection_for_event(event_id):
+                    break
+
     def record_event(
         self,
         event_type: str,
@@ -236,49 +270,48 @@ class RunStorage:
         """
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-        # Serialize the entire idempotency transaction. The lock is an advisory
-        # OS lock, so it is released automatically if the writer process dies.
+        # Atomic idempotency claim
         if idempotency_key:
             idem_path = os.path.join(self.idempotency_dir, f"{idempotency_key}.json")
-            with self._idempotency_lock(idem_path):
-                if os.path.exists(idem_path):
-                    with open(idem_path, "r", encoding="utf-8") as f:
-                        record = json.load(f)
-                    event_dict = record.get("event")
-                    if not event_dict:
-                        raise ValueError(f"Invalid idempotency record at {idem_path}")
-                    event = RunEvent(**event_dict)
-                    event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
-                    if not os.path.exists(event_file):
-                        atomic_write_json(event.to_dict(), event_file, allow_overwrite=False)
-                    self._ensure_projection(event)
-                    if record.get("status") != "completed":
-                        atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
-                    return event
+            if os.path.exists(idem_path):
+                return self._wait_and_load_idempotent_event(idem_path)
 
-                if event_id is None:
-                    event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
-                event = RunEvent(
-                    event_id=event_id,
-                    run_id=self.run_id,
-                    event_type=event_type,
-                    timestamp=now_str,
-                    tenant_scope=self.tenant_scope,
-                    repository_id=self.repository_id,
-                    delivery_id=delivery_id,
-                    idempotency_key=idempotency_key,
-                    data=data,
-                )
-                atomic_write_json(
-                    {"status": "reserved", "event": event.to_dict()},
-                    idem_path,
-                    allow_overwrite=False,
-                )
-                event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
+            if event_id is None:
+                event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
+
+            tentative_event = RunEvent(
+                event_id=event_id,
+                run_id=self.run_id,
+                event_type=event_type,
+                timestamp=now_str,
+                tenant_scope=self.tenant_scope,
+                repository_id=self.repository_id,
+                delivery_id=delivery_id,
+                idempotency_key=idempotency_key,
+                data=data,
+            )
+
+            # Claim idempotency key atomically before writing event/projection files
+            claim_data = {"status": "reserved", "event": tentative_event.to_dict()}
+            try:
+                atomic_write_json(claim_data, idem_path, allow_overwrite=False)
+            except FileExistsError:
+                # Lost race to concurrent claim -> load winner's record
+                return self._wait_and_load_idempotent_event(idem_path)
+
+            # Successfully reserved idempotency key -> write event & projection
+            event = tentative_event
+            event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
+            try:
                 atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
-                self._ensure_projection(event)
-                atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
-                return event
+            except FileExistsError:
+                pass
+
+            self._write_projection_if_missing(event.event_id, event_type)
+
+            # Update idempotency claim to complete status
+            atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
+            return event
 
         if event_id is None:
             event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
@@ -298,75 +331,13 @@ class RunStorage:
         event_file = os.path.join(self.events_dir, f"{event_id}.json")
         atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
 
-        written = False
-        while not written:
-            self.projection_sequence += 1
-            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
-            try:
-                atomic_write_json(
-                    {"sequence": self.projection_sequence, "event_id": event_id, "type": event_type},
-                    proj_file,
-                    allow_overwrite=False,
-                )
-                written = True
-            except FileExistsError:
-                continue
+        self._write_projection_if_missing(event_id, event_type)
 
         return event
 
-    @contextmanager
-    def _idempotency_lock(self, idem_path: str):
-        lock_dir = os.path.join(self.history_v1_dir, "locks", "idempotency")
-        os.makedirs(lock_dir, exist_ok=True)
-        lock_name = hashlib.sha256(idem_path.encode("utf-8")).hexdigest() + ".lock"
-        lock_path = os.path.join(lock_dir, lock_name)
-        lock_file = open(lock_path, "a+", encoding="utf-8")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            lock_file.close()
-
-    def _ensure_projection(self, event: RunEvent) -> None:
-        if self._has_projection_for_event(event.event_id):
-            return
-        while True:
-            self.projection_sequence = max(self.projection_sequence, self._get_max_projection_sequence()) + 1
-            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
-            try:
-                atomic_write_json(
-                    {"sequence": self.projection_sequence, "event_id": event.event_id, "type": event.event_type},
-                    proj_file,
-                    allow_overwrite=False,
-                )
-                return
-            except FileExistsError:
-                continue
-
-    def _has_projection_for_event(self, event_id: str) -> bool:
-        for filename in os.listdir(self.projections_dir):
-            if not filename.endswith(".json"):
-                continue
-            try:
-                with open(os.path.join(self.projections_dir, filename), "r", encoding="utf-8") as f:
-                    if json.load(f).get("event_id") == event_id:
-                        return True
-            except (OSError, json.JSONDecodeError):
-                continue
-        return False
-
-    def _get_max_projection_sequence(self) -> int:
-        sequences = [
-            int(filename[:-5])
-            for filename in os.listdir(self.projections_dir)
-            if filename.endswith(".json") and filename[:-5].isdigit()
-        ]
-        return max(sequences, default=0)
-
     def _wait_and_load_idempotent_event(self, idem_path: str) -> RunEvent:
         """Poll and load idempotent event record once written by winning worker.
-        Reconciles stale/crashed reservations if winning process crashed mid-write.
+        Reconciles stale/crashed/slow reservations deduplicating sequence projections by event_id.
         """
         for _ in range(50):
             if os.path.exists(idem_path):
@@ -393,21 +364,12 @@ class RunStorage:
         event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
 
         if not os.path.exists(event_file):
-            atomic_write_json(event.to_dict(), event_file, allow_overwrite=True)
-
-        written_proj = False
-        while not written_proj:
-            self.projection_sequence += 1
-            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
             try:
-                atomic_write_json(
-                    {"sequence": self.projection_sequence, "event_id": event.event_id, "type": event.event_type},
-                    proj_file,
-                    allow_overwrite=False,
-                )
-                written_proj = True
-            except FileExistsError:
-                continue
+                atomic_write_json(event.to_dict(), event_file, allow_overwrite=True)
+            except Exception:
+                pass
+
+        self._write_projection_if_missing(event.event_id, event.event_type)
 
         atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
         return event

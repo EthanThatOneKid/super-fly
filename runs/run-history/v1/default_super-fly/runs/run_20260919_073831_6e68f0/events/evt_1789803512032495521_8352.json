@@ -1,0 +1,16 @@
+{
+  "event_id": "evt_1789803512032495521_8352",
+  "run_id": "run_20260919_073831_6e68f0",
+  "event_type": "checkpoint_saved",
+  "timestamp": "2026-09-19T07:38:32Z",
+  "tenant_scope": "default",
+  "repository_id": "super-fly",
+  "delivery_id": null,
+  "idempotency_key": null,
+  "data": {
+    "episode": 0,
+    "step": 0,
+    "is_best": false,
+    "sha256": "981c3c516cb6976b69f27424a577fbfa3a7094c51c2e1f7e40fa7bd356c1b13c"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "event_id": "evt_1789803512087114346_fddb",
+  "run_id": "run_20260919_073831_6e68f0",
+  "event_type": "legacy_migration",
+  "timestamp": "2026-09-19T07:38:32Z",
+  "tenant_scope": "default",
+  "repository_id": "super-fly",
+  "delivery_id": null,
+  "idempotency_key": null,
+  "data": {
+    "path": "/tmp/tmpt0p052yp/test_model.pth.bak.20260919_073832",
+    "relative_path": "../../../tmp/tmpt0p052yp/test_model.pth.bak.20260919_073832",
+    "sha256": "7fb2f0ba33a40d1aba21dd750a79a95efb10f66e6656b4e55e456ffe49dff11f",
+    "timestamp": "2026-09-19T07:38:32Z"
+  }
+}

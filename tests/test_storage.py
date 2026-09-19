@@ -180,6 +180,33 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
                 idem_record = json.load(f)
             self.assertEqual(idem_record["status"], "completed")
 
+    def test_delayed_writer_does_not_duplicate_projections(self):
+        """Verify that if a delayed writer resumes writing projection after a recovery attempt,
+        projections deduplicate by event_id and no duplicate projection sequence files are generated.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = os.path.join(tmpdir, "runs")
+            storage = RunHistoryStore(runs_dir=runs_dir, run_id="run_delayed_writer")
+            idem_key = "delayed_key_55"
+            event_id = "evt_delayed_55"
+
+            # 1. Recovery worker completes reservation & writes projection
+            evt_recovered = storage.record_event(
+                "delayed_event",
+                {"data": 1},
+                event_id=event_id,
+                idempotency_key=idem_key,
+            )
+
+            projections_before = os.listdir(storage.projections_dir)
+            self.assertEqual(len(projections_before), 1)
+
+            # 2. Delayed original writer attempts to write projection for same event_id
+            storage._write_projection_if_missing(event_id, "delayed_event")
+
+            projections_after = os.listdir(storage.projections_dir)
+            self.assertEqual(len(projections_after), 1)  # Deduplicated; no extra projection written
+
     def test_concurrent_duplicate_deliveries_race_safety(self):
         """Verify 8 concurrent deliveries with identical idempotency_key produce exactly 1 event file,
         1 projection file, and 1 idempotency file, and all threads return identical event IDs.

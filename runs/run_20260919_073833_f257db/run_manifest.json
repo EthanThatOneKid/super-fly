@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run_20260919_073833_f257db",
+  "tenant_scope": "default",
+  "repository_id": "super-fly",
+  "status": "active",
+  "created_at": "2026-09-19T07:38:33Z",
+  "updated_at": "2026-09-19T07:38:33Z",
+  "git_commit_sha": "0ac69d4ee1a981b1fc8c40e331af4811254ab1f5",
+  "policy_config": {},
+  "legacy_backup": null,
+  "checkpoints": {}
+}

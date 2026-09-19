@@ -376,6 +376,7 @@ class Simulation:
             "telemetry_info": telemetry_info,
             "layer_acts": layer_acts,
             "terminated": terminated,
+            "terminated": terminated,
             "truncated": truncated,
             "action_source": self.action_source,
             "model_jumps": self.model_jumps,
