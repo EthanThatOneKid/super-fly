@@ -30,11 +30,15 @@ def get_game_id():
     import stable_retro
     return "SuperMarioBros-Nes-v0" if "SuperMarioBros-Nes-v0" in stable_retro.data.list_games() else "SuperMarioBros-Nes"
 
-def make_env(rom_path=None):
+def make_env(rom_path=None, state="Level1-1"):
     """Import the ROM (if present) and create a Super Mario Bros stable-retro env.
 
+    Args:
+        rom_path: Path to Super Mario Bros ROM file.
+        state: Initial state level name (e.g. 'Level1-1', 'Level1-2', 'Level1-3', 'Level1-4', etc.).
+
     Returns:
-        env: Fresh stable-retro environment on the Level1-1 state.
+        env: Fresh stable-retro environment on the requested state.
         game_id: Resolved stable-retro game id.
     """
     import stable_retro
@@ -45,7 +49,7 @@ def make_env(rom_path=None):
     game_id = get_game_id()
     env = stable_retro.make(
         game=game_id,
-        state="Level1-1",
+        state=state,
         render_mode=None,
         use_restricted_actions=stable_retro.Actions.FILTERED,
     )
@@ -63,7 +67,8 @@ class Simulation:
     """
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
-                 bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent"):
+                 bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
+                 states=None):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
@@ -73,6 +78,16 @@ class Simulation:
         if policy not in {"agent", "right_only", "bootstrap_only"}:
             raise ValueError(f"Unknown evaluation policy: {policy}")
         self.policy = policy
+
+        if states is None:
+            self.states = ["Level1-1"]
+        elif isinstance(states, str):
+            self.states = [s.strip() for s in states.split(",") if s.strip()]
+        else:
+            self.states = list(states)
+        if not self.states:
+            self.states = ["Level1-1"]
+        self.current_state = self.states[0]
 
         self.preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
         self.model = DrosophilaConnectomeSNN(num_ommatidia=784, channels_per_ommatidium=5)
@@ -120,14 +135,33 @@ class Simulation:
         decay_factor = max(0.0, 1.0 - (phase2_ep / phase2_total))
         return int(self.max_bootstrap_step * decay_factor)
 
-    def reset_episode(self, env):
-        """Reset the environment and all temporal simulation state for a new episode."""
+    def get_state_for_episode(self, episode: int) -> str:
+        """Determine level state for given episode in multi-level curriculum."""
+        if not self.states:
+            return "Level1-1"
+        idx = (episode - 1) % len(self.states)
+        return self.states[idx]
+
+    def reset_episode(self, env, state: str = None):
+        """Reset the environment and all temporal simulation state for a new episode.
+
+        Args:
+            env: stable-retro environment.
+            state: Optional state name override for this episode.
+        """
+        self.current_episode += 1
+
+        target_state = state if state is not None else self.get_state_for_episode(self.current_episode)
+        self.current_state = target_state
+
+        if hasattr(env, "unwrapped") and hasattr(env.unwrapped, "load_state"):
+            env.unwrapped.load_state(target_state)
+
         obs, _ = env.reset()
         self.preprocessor.reset()
         self.model.reset_state()
         self.ram_tracker.reset()
 
-        self.current_episode += 1
         self.current_step = 0
 
         self.hold_jump_counter = 0

@@ -40,7 +40,7 @@ class DualDopamineSTDP:
         if abs(dopamine_signal) < 1e-6:
             return
 
-        layers = [self.model.layer1_2, self.model.layer2_3, self.model.layer3_4]
+        layers = [self.model.layer1_2, self.model.layer2_3, self.model.layer3_4, self.model.feedback_3_2]
 
         with torch.no_grad():
             for layer in layers:
