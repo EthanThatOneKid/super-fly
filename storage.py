@@ -1,4 +1,6 @@
 import hashlib
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import random
@@ -280,48 +282,40 @@ class RunStorage:
         if idempotency_key is not None:
             validate_path_component(idempotency_key, "idempotency_key")
 
-        # Atomic idempotency claim
+        # Serialize the entire idempotency transaction. The lock is released automatically if the writer dies.
         if idempotency_key:
             idem_path = os.path.join(self.idempotency_dir, f"{idempotency_key}.json")
-            if os.path.exists(idem_path):
-                return self._wait_and_load_idempotent_event(idem_path)
+            with self._idempotency_lock(idem_path):
+                if os.path.exists(idem_path):
+                    return self._wait_and_load_idempotent_event(idem_path)
 
-            if event_id is None:
-                event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
+                if event_id is None:
+                    event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
 
-            tentative_event = RunEvent(
-                event_id=event_id,
-                run_id=self.run_id,
-                event_type=event_type,
-                timestamp=now_str,
-                tenant_scope=self.tenant_scope,
-                repository_id=self.repository_id,
-                delivery_id=delivery_id,
-                idempotency_key=idempotency_key,
-                data=data,
-            )
-
-            # Claim idempotency key atomically before writing event/projection files
-            claim_data = {"status": "reserved", "event": tentative_event.to_dict()}
-            try:
-                atomic_write_json(claim_data, idem_path, allow_overwrite=False)
-            except FileExistsError:
-                # Lost race to concurrent claim -> load winner's record
-                return self._wait_and_load_idempotent_event(idem_path)
-
-            # Successfully reserved idempotency key -> write event & projection
-            event = tentative_event
-            event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
-            try:
-                atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
-            except FileExistsError:
-                pass
-
-            self._write_projection_if_missing(event.event_id, event_type)
-
-            # Update idempotency claim to complete status
-            atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
-            return event
+                event = RunEvent(
+                    event_id=event_id,
+                    run_id=self.run_id,
+                    event_type=event_type,
+                    timestamp=now_str,
+                    tenant_scope=self.tenant_scope,
+                    repository_id=self.repository_id,
+                    delivery_id=delivery_id,
+                    idempotency_key=idempotency_key,
+                    data=data,
+                )
+                atomic_write_json(
+                    {"status": "reserved", "event": event.to_dict()},
+                    idem_path,
+                    allow_overwrite=False,
+                )
+                event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
+                try:
+                    atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
+                except FileExistsError:
+                    pass
+                self._write_projection_if_missing(event.event_id, event_type)
+                atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
+                return event
 
         if event_id is None:
             event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
@@ -344,6 +338,20 @@ class RunStorage:
         self._write_projection_if_missing(event_id, event_type)
 
         return event
+
+    @contextmanager
+    def _idempotency_lock(self, idem_path: str):
+        lock_dir = os.path.join(self.history_v1_dir, "locks", "idempotency")
+        os.makedirs(lock_dir, exist_ok=True)
+        lock_name = hashlib.sha256(idem_path.encode("utf-8")).hexdigest() + ".lock"
+        lock_path = os.path.join(lock_dir, lock_name)
+        lock_file = open(lock_path, "a+", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
 
     def _wait_and_load_idempotent_event(self, idem_path: str) -> RunEvent:
         """Poll and load idempotent event record once written by winning worker.
