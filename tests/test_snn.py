@@ -8,6 +8,9 @@ from ram_tracker import MarioRAMTracker
 from connectome import DrosophilaConnectomeSNN, LIFNeuronLayer
 from stdp import DualDopamineSTDP
 from simulation import Simulation, ACTION_MAP
+from telemetry import DrosophilaTelemetryOverlay
+from eval_harness import evaluate_agent, evaluate_policies
+from web_server import FlyBrainWebRunner, app
 
 class MockEnv:
     """Mock environment for testing Simulation step logic without stable-retro GUI/ROM dependencies."""
@@ -411,6 +414,76 @@ class TestSuperFlyRegression(unittest.TestCase):
         self.assertGreater(right_primary, noop_primary)
         self.assertGreater(jump_primary, noop_primary)
         self.assertGreater(right_jump_primary, noop_primary)
+
+    def test_dopamine_breakdown_in_ram_tracker(self):
+        tracker = MarioRAMTracker()
+        ram = np.zeros(0x0700, dtype=np.uint8)
+
+        # Forward movement
+        ram[0x0086] = 50
+        d_pam, d_ppl1, info = tracker.compute_dopamine(ram, False, False)
+        self.assertIn("dopamine_breakdown", info)
+        breakdown = info["dopamine_breakdown"]
+        self.assertIn("progress", breakdown)
+        self.assertIn("obstacle_clearance", breakdown)
+        self.assertIn("stagnation", breakdown)
+        self.assertIn("collision", breakdown)
+        self.assertIn("death", breakdown)
+        self.assertGreater(breakdown["progress"], 0.0)
+
+    def test_telemetry_overlay_rendering(self):
+        overlay = DrosophilaTelemetryOverlay()
+        obs_frame = np.zeros((240, 256, 3), dtype=np.uint8)
+        layer_acts = {
+            'ommatidia': torch.zeros(3920),
+            'optic_lobe': torch.zeros(256),
+            'central_complex': torch.zeros(128),
+            'motor_ganglion': torch.zeros(4)
+        }
+        info = {
+            'x_pos': 120,
+            'max_x_pos': 120,
+            'max_sub_page': 1,
+            'max_page': 0,
+            'action_source': 'model',
+            'model_jumps': 2,
+            'assisted_jumps': 0,
+            'bootstrap_active': False,
+            'dopamine_breakdown': {
+                'progress': 0.5,
+                'obstacle_clearance': 0.4,
+                'stagnation': 0.0,
+                'collision': 0.0,
+                'death': 0.0
+            }
+        }
+        canvas = overlay.render_overlay(obs_frame, layer_acts, 0.9, 0.0, info)
+        self.assertEqual(canvas.shape, (720, 1280, 3))
+
+    def test_eval_harness_benchmark_metrics(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "eval_model.pth")
+            sim = Simulation(save_path=save_path)
+            sim.save_checkpoint()
+
+            # Mock ROM check in evaluate_agent by pointing to non-existent ROM -> returns None
+            summary_none = evaluate_agent(rom_path="non_existent_rom.nes", save_path=save_path)
+            self.assertIsNone(summary_none)
+
+    def test_web_server_runner_stats(self):
+        runner = FlyBrainWebRunner()
+        self.assertIn("max_sub_page", runner.stats)
+        self.assertIn("max_page", runner.stats)
+        self.assertIn("dopamine_breakdown", runner.stats)
+
+        # Flask client test
+        app.config['TESTING'] = True
+        with app.test_client() as client:
+            resp = client.get('/stats')
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertIn("max_sub_page", data)
+            self.assertIn("dopamine_breakdown", data)
 
     def test_curriculum_decay_schedule(self):
         sim = Simulation(bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True)

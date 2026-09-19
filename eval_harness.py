@@ -72,22 +72,29 @@ def evaluate_agent(
 
             terminated = bool(outcome["terminated"]) if outcome else False
             truncated = bool(outcome["truncated"]) if outcome else False
-            ram_info = outcome["ram_info"] if outcome else {"max_x_pos": 0}
+            ram_info = outcome["ram_info"] if outcome else {"max_x_pos": 0, "max_sub_page": 0, "max_page": 0}
+            model_jumps = outcome["model_jumps"] if outcome else 0
+            assisted_jumps = outcome["assisted_jumps"] if outcome else 0
+            model_jump_freq = round(model_jumps / step, 6) if step else 0.0
+
             results.append(
                 {
                     "episode": ep,
                     "steps": step,
-                    "max_x": ram_info["max_x_pos"],
+                    "max_x": ram_info.get("max_x_pos", 0),
+                    "max_sub_page": ram_info.get("max_sub_page", 0),
+                    "max_page": ram_info.get("max_page", 0),
                     "pam": round(ep_pam, 2),
                     "ppl1": round(ep_ppl1, 2),
                     "terminated": terminated,
                     "truncated": truncated,
                     "died": bool(outcome["died"]) if outcome else False,
                     "survived_to_limit": step >= max_steps and not terminated,
-                    "model_jumps": outcome["model_jumps"] if outcome else 0,
-                    "assisted_jumps": outcome["assisted_jumps"] if outcome else 0,
+                    "model_jumps": model_jumps,
+                    "assisted_jumps": assisted_jumps,
                     "model_jump_frames": model_jump_frames,
                     "assisted_jump_frames": assisted_jump_frames,
+                    "model_jump_frequency": model_jump_freq,
                     "action_source": outcome["action_source"] if outcome else "right",
                     "bootstrap_active": outcome["bootstrap_active"] if outcome else False,
                     "layer_spike_counts": layer_spike_counts,
@@ -100,12 +107,21 @@ def evaluate_agent(
     finally:
         env.close()
 
+    x_vals = [r["max_x"] for r in results]
     summary = {
         "policy": policy,
         "seed": seed,
         "episodes_evaluated": len(results),
-        "avg_max_x": round(sum(r["max_x"] for r in results) / len(results), 2) if results else 0,
-        "best_max_x": max((r["max_x"] for r in results), default=0),
+        "avg_max_x": round(sum(x_vals) / len(results), 2) if results else 0.0,
+        "best_max_x": max(x_vals, default=0),
+        "min_max_x": min(x_vals, default=0),
+        "std_max_x": round(float(np.std(x_vals)), 2) if results else 0.0,
+        "avg_max_sub_page": round(sum(r["max_sub_page"] for r in results) / len(results), 2) if results else 0.0,
+        "avg_max_page": round(sum(r["max_page"] for r in results) / len(results), 2) if results else 0.0,
+        "best_sub_page": max((r["max_sub_page"] for r in results), default=0),
+        "best_page": max((r["max_page"] for r in results), default=0),
+        "sub_page_milestone_rate": round(sum(1 for r in results if r["max_sub_page"] > 0) / len(results), 4) if results else 0.0,
+        "page_milestone_rate": round(sum(1 for r in results if r["max_page"] > 0) / len(results), 4) if results else 0.0,
         "avg_steps": round(sum(r["steps"] for r in results) / len(results), 2) if results else 0,
         "episodes_died": sum(r["died"] for r in results),
         "episodes_terminated": sum(r["terminated"] for r in results),
@@ -115,6 +131,7 @@ def evaluate_agent(
         "total_assisted_jumps": sum(r["assisted_jumps"] for r in results),
         "total_model_jump_frames": sum(r["model_jump_frames"] for r in results),
         "total_assisted_jump_frames": sum(r["assisted_jump_frames"] for r in results),
+        "avg_model_jump_frequency": round(sum(r["model_jump_frequency"] for r in results) / len(results), 6) if results else 0.0,
         "avg_layer_spike_rates": {
             name: round(
                 sum(r["layer_spike_rates"][name] for r in results) / len(results),

@@ -24,8 +24,13 @@ class FlyBrainWebRunner:
         self.lock = threading.Lock()
         self.running = False
         self.stats = {
-            "episode": 0, "max_x": 0, "best_x": 0, "pam": 0.0, "ppl1": 0.0, "step": 0,
-            "action_source": "right", "model_jumps": 0, "assisted_jumps": 0, "bootstrap_active": False
+            "episode": 0, "max_x": 0, "best_x": 0, "max_sub_page": 0, "max_page": 0,
+            "pam": 0.0, "ppl1": 0.0, "step": 0, "action_source": "right",
+            "model_jumps": 0, "assisted_jumps": 0, "bootstrap_active": False,
+            "dopamine_breakdown": {
+                "progress": 0.0, "obstacle_clearance": 0.0,
+                "stagnation": 0.0, "collision": 0.0, "death": 0.0
+            }
         }
 
     def start_simulation(self):
@@ -78,6 +83,8 @@ class FlyBrainWebRunner:
                             "episode": episode,
                             "max_x": outcome["ram_info"]["max_x_pos"],
                             "best_x": sim.best_x,
+                            "max_sub_page": outcome["ram_info"].get("max_sub_page", 0),
+                            "max_page": outcome["ram_info"].get("max_page", 0),
                             "pam": round(ep_pam, 2),
                             "ppl1": round(ep_ppl1, 2),
                             "step": step,
@@ -85,6 +92,10 @@ class FlyBrainWebRunner:
                             "model_jumps": outcome["model_jumps"],
                             "assisted_jumps": outcome["assisted_jumps"],
                             "bootstrap_active": outcome["bootstrap_active"],
+                            "dopamine_breakdown": outcome["ram_info"].get("dopamine_breakdown", {
+                                "progress": 0.0, "obstacle_clearance": 0.0,
+                                "stagnation": 0.0, "collision": 0.0, "death": 0.0
+                            })
                         }
 
                     if outcome["terminated"] or outcome["truncated"]:
@@ -109,9 +120,15 @@ HTML_PAGE = """
         .container { display: flex; flex-direction: column; align-items: center; justify-content: center; margin-top: 15px; }
         .stream-card { border: 2px solid #333; border-radius: 8px; box-shadow: 0 4px 20px rgba(0, 255, 204, 0.2); overflow: hidden; max-width: 1280px; }
         img { display: block; width: 100%; height: auto; }
-        .stats-panel { display: flex; gap: 30px; margin-top: 20px; font-size: 1.1em; background: #1e1e1e; padding: 15px 30px; border-radius: 8px; }
-        .stat-item { display: flex; flex-direction: column; align-items: center; }
-        .stat-value { font-weight: bold; font-size: 1.4em; color: #00ffcc; }
+        .stats-panel { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; margin-top: 20px; font-size: 1.0em; background: #1e1e1e; padding: 15px 25px; border-radius: 8px; max-width: 1280px; }
+        .stat-item { display: flex; flex-direction: column; align-items: center; min-width: 100px; }
+        .stat-label { color: #aaaaaa; font-size: 0.85em; text-transform: uppercase; letter-spacing: 1px; }
+        .stat-value { font-weight: bold; font-size: 1.3em; color: #00ffcc; }
+        .badge-panel { display: flex; gap: 15px; margin-top: 10px; }
+        .badge { padding: 4px 10px; border-radius: 4px; font-size: 0.9em; font-weight: bold; background: #2a2a2a; border: 1px solid #444; }
+        .badge.active-sub { border-color: #00ffff; color: #00ffff; }
+        .badge.active-page { border-color: #ffd700; color: #ffd700; }
+        .breakdown-section { width: 100%; font-size: 0.9em; color: #dddddd; margin-top: 10px; border-top: 1px solid #333; padding-top: 10px; display: flex; justify-content: space-around; }
     </style>
 </head>
 <body>
@@ -122,6 +139,49 @@ HTML_PAGE = """
         <div class="stream-card">
             <img src="/video_feed" alt="Fly Brain Telemetry Live Stream" />
         </div>
+
+        <div class="stats-panel">
+            <div class="stat-item">
+                <span class="stat-label">Episode</span>
+                <span id="stat-ep" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Step</span>
+                <span id="stat-step" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Max X</span>
+                <span id="stat-x" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Best X</span>
+                <span id="stat-best" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">PAM (Reward)</span>
+                <span id="stat-pam" class="stat-value" style="color: #00ff00;">0.0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">PPL1 (Aversion)</span>
+                <span id="stat-ppl1" class="stat-value" style="color: #ff3333;">0.0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Model Jumps</span>
+                <span id="stat-jumps" class="stat-value">0</span>
+            </div>
+
+            <div class="badge-panel">
+                <div id="badge-sub" class="badge">SUB-PAGE: 0</div>
+                <div id="badge-page" class="badge">PAGE: 0</div>
+            </div>
+
+            <div class="breakdown-section">
+                <span>PAM Progress: <b id="break-prog" style="color: #00ff00;">0.00</b></span>
+                <span>PAM Obstacle: <b id="break-obs" style="color: #00ff00;">0.00</b></span>
+                <span>PPL1 Stagnation: <b id="break-stag" style="color: #ff3333;">0.00</b></span>
+                <span>PPL1 Collision: <b id="break-coll" style="color: #ff3333;">0.00</b></span>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -130,7 +190,30 @@ HTML_PAGE = """
                 .then(r => r.json())
                 .then(data => {
                     if (data) {
-                        console.log(data);
+                        document.getElementById('stat-ep').innerText = data.episode || 0;
+                        document.getElementById('stat-step').innerText = data.step || 0;
+                        document.getElementById('stat-x').innerText = data.max_x || 0;
+                        document.getElementById('stat-best').innerText = data.best_x || 0;
+                        document.getElementById('stat-pam').innerText = data.pam || 0.0;
+                        document.getElementById('stat-ppl1').innerText = data.ppl1 || 0.0;
+                        document.getElementById('stat-jumps').innerText = data.model_jumps || 0;
+
+                        const maxSub = data.max_sub_page || 0;
+                        const maxPage = data.max_page || 0;
+                        const subEl = document.getElementById('badge-sub');
+                        const pageEl = document.getElementById('badge-page');
+
+                        subEl.innerText = "SUB-PAGE: " + maxSub;
+                        pageEl.innerText = "PAGE: " + maxPage;
+
+                        if (maxSub > 0) subEl.classList.add('active-sub'); else subEl.classList.remove('active-sub');
+                        if (maxPage > 0) pageEl.classList.add('active-page'); else pageEl.classList.remove('active-page');
+
+                        const bd = data.dopamine_breakdown || {};
+                        document.getElementById('break-prog').innerText = (bd.progress || 0.0).toFixed(2);
+                        document.getElementById('break-obs').innerText = (bd.obstacle_clearance || 0.0).toFixed(2);
+                        document.getElementById('break-stag').innerText = (bd.stagnation || 0.0).toFixed(2);
+                        document.getElementById('break-coll').innerText = (bd.collision || 0.0).toFixed(2);
                     }
                 });
         }

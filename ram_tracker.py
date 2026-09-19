@@ -67,30 +67,33 @@ class MarioRAMTracker:
         Returns:
             d_pam: PAM positive dopamine scalar
             d_ppl1: PPL1 aversive dopamine scalar
-            info: tracking details
+            info: tracking details including dopamine sub-type breakdowns
         """
         x_pos = self.get_x_pos(ram)
         airborne = self.is_airborne(ram)
-        d_pam = 0.0
-        d_ppl1 = 0.0
+        d_pam_progress = 0.0
+        d_pam_obstacle = 0.0
+        d_ppl1_stagnation = 0.0
+        d_ppl1_collision = 0.0
+        d_ppl1_death = 0.0
 
         current_speed = x_pos - self.last_x_pos if self.last_x_pos > 0 else 0
 
         # 1. Forward progress & Milestone rewards (PAM)
         if x_pos > self.max_x_pos:
             progress_delta = x_pos - self.max_x_pos
-            d_pam = min(1.0, progress_delta / 10.0)
+            d_pam_progress = min(1.0, progress_delta / 10.0)
 
             # Sub-page milestone check (every 64 pixels)
             sub_page = x_pos // 64
             if sub_page > self.max_sub_page:
-                d_pam = min(1.0, d_pam + 0.3)
+                d_pam_progress = min(1.0, d_pam_progress + 0.3)
                 self.max_sub_page = sub_page
 
             # Level page milestone check (every 256 pixels)
             page = x_pos // 256
             if page > self.max_page:
-                d_pam = min(1.0, d_pam + 0.5)
+                d_pam_progress = min(1.0, d_pam_progress + 0.5)
                 self.max_page = page
 
             self.max_x_pos = x_pos
@@ -98,7 +101,7 @@ class MarioRAMTracker:
         else:
             self.stagnant_steps += 1
             if self.stagnant_steps > 60:  # Stagnant for ~1 second (60 fps)
-                d_ppl1 += 0.05
+                d_ppl1_stagnation += 0.05
 
         # 2. Airborne / Jump Obstacle Clearance & Mid-jump Stagnation
         if airborne:
@@ -109,35 +112,35 @@ class MarioRAMTracker:
 
             # Mid-jump stagnation check (airborne with zero or negative forward speed)
             if current_speed <= 0:
-                d_ppl1 = min(1.0, d_ppl1 + 0.2)
+                d_ppl1_stagnation = min(1.0, d_ppl1_stagnation + 0.2)
 
             # Obstacle/pipe clearance mid-jump
             air_distance = x_pos - self.jump_start_x
             if air_distance >= 24 and not self.cleared_obstacle:
-                d_pam = min(1.0, d_pam + 0.4)
+                d_pam_obstacle = min(1.0, d_pam_obstacle + 0.4)
                 self.cleared_obstacle = True
         else:
             if self.in_air:
                 # Just landed from jump
                 air_distance = x_pos - self.jump_start_x
                 if air_distance >= 24 and not self.cleared_obstacle:
-                    d_pam = min(1.0, d_pam + 0.4)
+                    d_pam_obstacle = min(1.0, d_pam_obstacle + 0.4)
                 self.in_air = False
 
         # 3. Collision-induced speed drop check (PPL1)
         # Bumping into wall or pipe while moving forward on ground
         if not airborne and self.last_speed >= 2 and current_speed <= 0 and not self.is_dead(ram) and not terminated:
-            d_ppl1 = min(1.0, d_ppl1 + 0.3)
+            d_ppl1_collision = min(1.0, d_ppl1_collision + 0.3)
 
         # 4. Death or Termination (PPL1)
         if self.is_dead(ram) or terminated:
-            d_ppl1 = 1.0
+            d_ppl1_death = 1.0
 
         self.last_speed = current_speed
         self.last_x_pos = x_pos
 
-        d_pam = float(np.clip(d_pam, 0.0, 1.0))
-        d_ppl1 = float(np.clip(d_ppl1, 0.0, 1.0))
+        d_pam = float(np.clip(d_pam_progress + d_pam_obstacle, 0.0, 1.0))
+        d_ppl1 = float(np.clip(d_ppl1_stagnation + d_ppl1_collision + d_ppl1_death, 0.0, 1.0))
 
         info = {
             'x_pos': x_pos,
@@ -149,6 +152,13 @@ class MarioRAMTracker:
             'max_page': self.max_page,
             'is_airborne': airborne,
             'current_speed': current_speed,
+            'dopamine_breakdown': {
+                'progress': float(np.clip(d_pam_progress, 0.0, 1.0)),
+                'obstacle_clearance': float(np.clip(d_pam_obstacle, 0.0, 1.0)),
+                'stagnation': float(np.clip(d_ppl1_stagnation, 0.0, 1.0)),
+                'collision': float(np.clip(d_ppl1_collision, 0.0, 1.0)),
+                'death': float(np.clip(d_ppl1_death, 0.0, 1.0)),
+            }
         }
 
         return d_pam, d_ppl1, info

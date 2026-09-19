@@ -103,17 +103,44 @@ class DrosophilaTelemetryOverlay:
         cv2.putText(canvas, f"PPL1 (Aversion): {d_ppl1:.2f}", (right_x + 310, 535),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1)
 
+        # Dopamine Sub-type Breakdowns Text
+        breakdown = info.get("dopamine_breakdown", {})
+        prog_val = breakdown.get("progress", 0.0)
+        obs_val = breakdown.get("obstacle_clearance", 0.0)
+        stag_val = breakdown.get("stagnation", 0.0)
+        coll_val = breakdown.get("collision", 0.0)
+
+        cv2.putText(canvas, f"PAM Breakdown: Prog: {prog_val:.2f} | ObsClear: {obs_val:.2f}", (right_x, 555),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 255, 150), 1)
+        cv2.putText(canvas, f"PPL1 Breakdown: Stag: {stag_val:.2f} | Coll: {coll_val:.2f}", (right_x, 570),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 255), 1)
+
+        # Milestone Badges & Progress Info
+        max_sub = info.get("max_sub_page", 0)
+        max_pg = info.get("max_page", 0)
+
+        sub_badge_color = (0, 255, 255) if max_sub > 0 else (100, 100, 100)
+        page_badge_color = (0, 215, 255) if max_pg > 0 else (100, 100, 100)
+
+        cv2.rectangle(canvas, (right_x, 580), (right_x + 130, 602), sub_badge_color, 1)
+        cv2.putText(canvas, f"SUB-PAGE: {max_sub}", (right_x + 8, 596),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, sub_badge_color, 1)
+
+        cv2.rectangle(canvas, (right_x + 140, 580), (right_x + 260, 602), page_badge_color, 1)
+        cv2.putText(canvas, f"PAGE: {max_pg}", (right_x + 152, 596),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, page_badge_color, 1)
+
         # Telemetry Text & Action Accounting
         action_source = info.get("action_source", "N/A")
         model_jumps = info.get("model_jumps", 0)
         assisted_jumps = info.get("assisted_jumps", 0)
         bootstrap_active = info.get("bootstrap_active", False)
 
-        cv2.putText(canvas, f"Action Source: {action_source} | Bootstrap: {bootstrap_active}", (right_x, 575),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
-        cv2.putText(canvas, f"Model Jumps: {model_jumps} | Assisted Jumps: {assisted_jumps}", (right_x, 595),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 255, 200), 1)
-        cv2.putText(canvas, f"Horizontal Progress X: {info.get('x_pos', 0)} | Max X: {info.get('max_x_pos', 0)}", (right_x, 615),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+        cv2.putText(canvas, f"Action Source: {action_source} | Bootstrap: {bootstrap_active}", (right_x, 622),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 255, 200), 1)
+        cv2.putText(canvas, f"Model Jumps: {model_jumps} | Assisted Jumps: {assisted_jumps}", (right_x, 638),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (200, 255, 200), 1)
+        cv2.putText(canvas, f"Progress X: {info.get('x_pos', 0)} | Max X: {info.get('max_x_pos', 0)}", (right_x, 654),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 255), 1)
 
         return canvas
