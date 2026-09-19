@@ -42,15 +42,23 @@ def compute_sha256(filepath: str) -> str:
 
 def atomic_save_torch(data: dict, filepath: str, allow_overwrite: bool = True) -> None:
     """Atomically write a PyTorch object using a temporary file in the same directory."""
-    if not allow_overwrite and os.path.exists(filepath):
-        raise FileExistsError(f"File already exists and allow_overwrite is False: {filepath}")
-
     dir_name = os.path.dirname(os.path.abspath(filepath))
     os.makedirs(dir_name, exist_ok=True)
-    tmp_path = f"{filepath}.tmp.{os.getpid()}_{time.time_ns()}"
+    tmp_path = f"{filepath}.tmp.{os.getpid()}_{time.time_ns()}_{os.urandom(2).hex()}"
     try:
         torch.save(data, tmp_path)
-        os.replace(tmp_path, filepath)
+        if not allow_overwrite:
+            try:
+                os.link(tmp_path, filepath)
+            except OSError as e:
+                if e.errno == 17 or isinstance(e, FileExistsError):
+                    raise FileExistsError(f"File already exists and allow_overwrite is False: {filepath}")
+                raise
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        else:
+            os.replace(tmp_path, filepath)
     except Exception:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -59,16 +67,24 @@ def atomic_save_torch(data: dict, filepath: str, allow_overwrite: bool = True) -
 
 def atomic_write_json(data: dict, filepath: str, allow_overwrite: bool = True) -> None:
     """Atomically write JSON metadata using a temporary file in the same directory."""
-    if not allow_overwrite and os.path.exists(filepath):
-        raise FileExistsError(f"File already exists and allow_overwrite is False: {filepath}")
-
     dir_name = os.path.dirname(os.path.abspath(filepath))
     os.makedirs(dir_name, exist_ok=True)
-    tmp_path = f"{filepath}.tmp.{os.getpid()}_{time.time_ns()}"
+    tmp_path = f"{filepath}.tmp.{os.getpid()}_{time.time_ns()}_{os.urandom(2).hex()}"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(tmp_path, filepath)
+        if not allow_overwrite:
+            try:
+                os.link(tmp_path, filepath)
+            except OSError as e:
+                if e.errno == 17 or isinstance(e, FileExistsError):
+                    raise FileExistsError(f"File already exists and allow_overwrite is False: {filepath}")
+                raise
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        else:
+            os.replace(tmp_path, filepath)
     except Exception:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -174,7 +190,17 @@ class RunStorage:
             self.manifest = self._create_initial_manifest()
             atomic_write_json(self.manifest, self.manifest_path)
 
+        # Recover projection sequence from existing durable state
         self.projection_sequence = 0
+        if os.path.exists(self.projections_dir):
+            seqs = []
+            for f in os.listdir(self.projections_dir):
+                if f.endswith(".json"):
+                    stem = f[:-5]
+                    if stem.isdigit():
+                        seqs.append(int(stem))
+            if seqs:
+                self.projection_sequence = max(seqs)
 
     def _create_initial_manifest(self) -> dict:
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -234,21 +260,30 @@ class RunStorage:
         event_file = os.path.join(self.events_dir, f"{event_id}.json")
         atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
 
-        self.projection_sequence += 1
-        proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
-        atomic_write_json(
-            {"sequence": self.projection_sequence, "event_id": event_id, "type": event_type},
-            proj_file,
-            allow_overwrite=False,
-        )
+        written = False
+        while not written:
+            self.projection_sequence += 1
+            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
+            try:
+                atomic_write_json(
+                    {"sequence": self.projection_sequence, "event_id": event_id, "type": event_type},
+                    proj_file,
+                    allow_overwrite=False,
+                )
+                written = True
+            except FileExistsError:
+                continue
 
         if idempotency_key:
             idem_path = os.path.join(self.idempotency_dir, f"{idempotency_key}.json")
-            atomic_write_json(
-                {"idempotency_key": idempotency_key, "event": event.to_dict()},
-                idem_path,
-                allow_overwrite=False,
-            )
+            try:
+                atomic_write_json(
+                    {"idempotency_key": idempotency_key, "event": event.to_dict()},
+                    idem_path,
+                    allow_overwrite=False,
+                )
+            except FileExistsError:
+                pass
 
         return event
 

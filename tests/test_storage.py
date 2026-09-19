@@ -51,6 +51,9 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
                 save_path=save_path,
                 runs_dir=runs_dir,
                 seed=seed,
+                lr=0.0123,
+                bootstrap_episodes=15,
+                max_bootstrap_step=450,
                 curriculum=True,
                 states=["Level1-1", "Level1-2"],
                 policy="agent",
@@ -81,7 +84,7 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             )
             sim2.load_checkpoint(os.path.join(sim1.run_storage.run_dir, "latest_checkpoint.pth"))
 
-            # Verify restoration
+            # Verify model & control state restoration
             torch.testing.assert_close(sim1.model.layer1_2.weight, sim2.model.layer1_2.weight)
             torch.testing.assert_close(sim1.model.layer1_2.v_thresh, sim2.model.layer1_2.v_thresh)
             torch.testing.assert_close(sim1.model.layer1_2.rate_trace, sim2.model.layer1_2.rate_trace)
@@ -91,6 +94,14 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             self.assertEqual(sim2.current_step, 150)
             self.assertEqual(sim2.best_x, 420)
             self.assertEqual(sim2.current_state, "Level1-2")
+
+            # Verify serialized policy & curriculum control parameters
+            self.assertEqual(sim2.policy, "agent")
+            self.assertEqual(sim2.lr, 0.0123)
+            self.assertEqual(sim2.seed, 42)
+            self.assertEqual(sim2.bootstrap_episodes, 15)
+            self.assertEqual(sim2.max_bootstrap_step, 450)
+            self.assertEqual(sim2.states, ["Level1-1", "Level1-2"])
 
             # Verify manifest metadata
             manifest_path = sim1.run_storage.manifest_path
@@ -104,6 +115,29 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             self.assertEqual(manifest["policy_config"]["policy"], "agent")
             self.assertEqual(manifest["policy_config"]["seed"], seed)
             self.assertEqual(manifest["git_commit_sha"], get_git_commit_sha())
+
+    def test_reopening_run_recovers_sequence_projection(self):
+        """Verify reopening an existing run_id recovers the next sequence sequence and appends history."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = os.path.join(tmpdir, "runs")
+            run_id = "run_restart_seq_test"
+
+            storage1 = RunStorage(runs_dir=runs_dir, run_id=run_id)
+            storage1.record_event("event_a", {"step": 1})
+            storage1.record_event("event_b", {"step": 2})
+
+            self.assertEqual(storage1.projection_sequence, 2)
+
+            # Reopen run in new storage instance
+            storage2 = RunStorage(runs_dir=runs_dir, run_id=run_id)
+            self.assertEqual(storage2.projection_sequence, 2)
+
+            # Record next event -> should create projection 000003.json seamlessly
+            evt3 = storage2.record_event("event_c", {"step": 3})
+            self.assertEqual(storage2.projection_sequence, 3)
+
+            proj3_path = os.path.join(storage2.projections_dir, "000003.json")
+            self.assertTrue(os.path.exists(proj3_path))
 
     def test_immutable_event_writes_and_overwrite_rejection(self):
         """Verify event files under run-history/v1 reject overwrites when allow_overwrite=False."""

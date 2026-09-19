@@ -137,9 +137,27 @@ class Simulation:
                 self.current_step = payload["step"]
             if "best_x" in payload:
                 self.best_x = payload["best_x"]
+
+            # Restore policy configuration if serialized
+            if "policy_config" in payload:
+                p_cfg = payload["policy_config"]
+                if "policy" in p_cfg:
+                    self.policy = p_cfg["policy"]
+                if "lr" in p_cfg:
+                    self.lr = p_cfg["lr"]
+                    self.stdp.lr = self.lr
+                if "seed" in p_cfg and p_cfg["seed"] is not None:
+                    self.seed = p_cfg["seed"]
+
+            # Restore curriculum control state if serialized
             if "curriculum_state" in payload:
                 cs = payload["curriculum_state"]
                 self.current_state = cs.get("current_state", self.current_state)
+                self.states = cs.get("states", self.states)
+                self.curriculum = cs.get("curriculum", self.curriculum)
+                self.bootstrap_episodes = cs.get("bootstrap_episodes", self.bootstrap_episodes)
+                self.max_bootstrap_step = cs.get("max_bootstrap_step", self.max_bootstrap_step)
+
             if "rng_states" in payload:
                 rngs = payload["rng_states"]
                 if rngs.get("python") is not None:
