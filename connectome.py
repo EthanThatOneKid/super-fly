@@ -112,11 +112,12 @@ class LIFNeuronLayer(nn.Module):
 
 class DrosophilaConnectomeSNN(nn.Module):
     """
-    4-Layer Drosophila Connectome SNN:
+    4-Layer Drosophila Connectome SNN with Recurrent Central Complex -> Optic Lobe Feedback:
     - Layer 1: Sensory Ommatidia Input (~800 ommatidia x 5 channels = 3920 units)
     - Layer 2: Optic Lobe / Medulla / Lobula (Motion & Edge Neuropils)
     - Layer 3: Central Complex / Mushroom Body (Recurrent Interneurons)
     - Layer 4: Thoracic Motor Ganglion (Action Output Neurons: NOOP, RIGHT, JUMP, RIGHT+JUMP)
+    - Feedback 3->2: Central Complex / Mushroom Body to Optic Lobe Recurrent Loop
     """
     def __init__(self, num_ommatidia: int = 784, channels_per_ommatidium: int = 5):
         super().__init__()
@@ -137,7 +138,19 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.layer3_4 = LIFNeuronLayer(self.num_central_complex, self.num_motor_ganglion, tau_m=25.0)
         self.layer3_4.current_gain = 6.0
 
+        # Recurrent Feedback 3 -> 2: Central Complex to Optic Lobe
+        self.feedback_3_2 = LIFNeuronLayer(self.num_central_complex, self.num_optic_lobe, tau_m=20.0)
+        self.register_buffer('recurrent_central_spikes', torch.zeros(self.num_central_complex))
+
         self.initialize_weights()
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
+                              missing_keys, unexpected_keys, error_msgs):
+        recurrent_key = prefix + 'recurrent_central_spikes'
+        if recurrent_key not in state_dict:
+            state_dict[recurrent_key] = torch.zeros(self.num_central_complex)
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
+                                      missing_keys, unexpected_keys, error_msgs)
 
     def initialize_weights(self):
         """
@@ -181,34 +194,53 @@ class DrosophilaConnectomeSNN(nn.Module):
             w3 -= w3.mean(dim=1, keepdim=True)
             self.layer3_4.weight.copy_(w3)
 
+            # Feedback 3->2: Central Complex to Optic Lobe
+            # Shape: (num_optic_lobe=256, num_central_complex=128)
+            w_fb = torch.randn(self.num_optic_lobe, self.num_central_complex) * (2.0 / self.num_central_complex)**0.5
+            w_fb -= w_fb.mean(dim=1, keepdim=True)
+            self.feedback_3_2.weight.copy_(w_fb)
+
     def reset_state(self):
-        """Reset internal state of all LIF layers."""
+        """Reset internal state of all LIF layers and recurrent buffers."""
         self.layer1_2.reset_state()
         self.layer2_3.reset_state()
         self.layer3_4.reset_state()
+        self.feedback_3_2.reset_state()
+        self.recurrent_central_spikes.zero_()
 
     def reset_homeostasis(self):
         """Reset threshold values and firing rate traces across all layers."""
         self.layer1_2.reset_homeostasis()
         self.layer2_3.reset_homeostasis()
         self.layer3_4.reset_homeostasis()
+        self.feedback_3_2.reset_homeostasis()
 
     def forward(self, sensory_spikes: torch.Tensor):
         """
-        Process single timestep sensory spikes.
+        Process single timestep sensory spikes with recurrent feedback.
         Returns:
             motor_spikes: Tensor of shape (4,) containing spikes for actions.
             layer_activations: dict containing spiking activity across layers for visualization.
         """
-        optic_spikes = self.layer1_2(sensory_spikes)
+        # Process recurrent feedback from Central Complex spikes from previous timestep
+        fb_spikes = self.feedback_3_2(self.recurrent_central_spikes)
+
+        # Optic Lobe integrates sensory input and recurrent feedback spikes
+        sensory_optic_spikes = self.layer1_2(sensory_spikes)
+        optic_spikes = torch.clamp(sensory_optic_spikes + fb_spikes, 0.0, 1.0)
+
         central_spikes = self.layer2_3(optic_spikes)
         motor_spikes = self.layer3_4(central_spikes)
+
+        # Update recurrent state buffer with current timestep Central Complex activity
+        self.recurrent_central_spikes.copy_(central_spikes.detach())
 
         layer_activations = {
             'ommatidia': sensory_spikes,
             'optic_lobe': optic_spikes,
             'central_complex': central_spikes,
-            'motor_ganglion': motor_spikes
+            'motor_ganglion': motor_spikes,
+            'feedback_3_2': fb_spikes
         }
 
         return motor_spikes, layer_activations

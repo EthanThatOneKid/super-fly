@@ -390,6 +390,67 @@ class TestSuperFlyRegression(unittest.TestCase):
 
         torch.testing.assert_close(layer.v_thresh, initial_v_thresh)
 
+    def test_recurrent_feedback_connections(self):
+        model = DrosophilaConnectomeSNN()
+
+        # Check feedback layer shapes and initialization
+        self.assertEqual(model.feedback_3_2.weight.shape, (256, 128))
+        fb_row_means = model.feedback_3_2.weight.mean(dim=1)
+        self.assertTrue(torch.allclose(fb_row_means, torch.zeros_like(fb_row_means), atol=1e-5))
+
+        # Initial recurrent buffer should be zero
+        self.assertTrue(torch.all(model.recurrent_central_spikes == 0))
+
+        # First forward pass
+        sensory = torch.rand(3920)
+        motor_spikes, activations = model(sensory)
+        self.assertIn("feedback_3_2", activations)
+
+        # Recurrent central spikes buffer should now hold step 1 central_complex spikes
+        torch.testing.assert_close(model.recurrent_central_spikes, activations["central_complex"])
+
+        # Reset state clears recurrent central spikes
+        model.reset_state()
+        self.assertTrue(torch.all(model.recurrent_central_spikes == 0))
+
+    def test_stdp_updates_feedback_weights(self):
+        model = DrosophilaConnectomeSNN()
+        stdp = DualDopamineSTDP(model, lr=0.01)
+
+        with torch.no_grad():
+            model.feedback_3_2.trace_post.fill_(1.0)
+            model.feedback_3_2.trace_pre.zero_()
+            model.feedback_3_2.trace_pre[:30] = 1.0
+
+        initial_w = model.feedback_3_2.weight.clone()
+        stdp.step(1.0, 0.0)
+
+        # Feedback weights should update under dopamine signal
+        self.assertFalse(torch.allclose(model.feedback_3_2.weight, initial_w))
+        row_means = model.feedback_3_2.weight.mean(dim=1)
+        self.assertTrue(torch.allclose(row_means, torch.zeros_like(row_means), atol=1e-5))
+
+    def test_multi_level_curriculum_state_rotation(self):
+        states = ["Level1-1", "Level1-2", "Level1-3"]
+        sim = Simulation(states=states)
+        env = MockEnv()
+
+        obs = sim.reset_episode(env)
+        self.assertEqual(sim.current_episode, 1)
+        self.assertEqual(sim.current_state, "Level1-1")
+
+        obs = sim.reset_episode(env)
+        self.assertEqual(sim.current_episode, 2)
+        self.assertEqual(sim.current_state, "Level1-2")
+
+        obs = sim.reset_episode(env)
+        self.assertEqual(sim.current_episode, 3)
+        self.assertEqual(sim.current_state, "Level1-3")
+
+        obs = sim.reset_episode(env)
+        self.assertEqual(sim.current_episode, 4)
+        self.assertEqual(sim.current_state, "Level1-1")
+
     def test_weight_initialization_heuristics(self):
         model = DrosophilaConnectomeSNN()
 
@@ -397,9 +458,10 @@ class TestSuperFlyRegression(unittest.TestCase):
         self.assertEqual(model.layer1_2.weight.shape, (256, 3920))
         self.assertEqual(model.layer2_3.weight.shape, (128, 256))
         self.assertEqual(model.layer3_4.weight.shape, (4, 128))
+        self.assertEqual(model.feedback_3_2.weight.shape, (256, 128))
 
         # Verify zero-mean row centering across all layers
-        for layer in (model.layer1_2, model.layer2_3, model.layer3_4):
+        for layer in (model.layer1_2, model.layer2_3, model.layer3_4, model.feedback_3_2):
             row_means = layer.weight.mean(dim=1)
             self.assertTrue(torch.allclose(row_means, torch.zeros_like(row_means), atol=1e-5))
 

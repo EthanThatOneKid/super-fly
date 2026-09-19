@@ -21,6 +21,7 @@ def evaluate_agent(
     max_bootstrap_step=0,
     seed=42,
     policy="agent",
+    states=None,
 ):
     """Evaluate one policy without changing checkpoint weights."""
     if policy not in POLICIES:
@@ -34,13 +35,17 @@ def evaluate_agent(
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    env, _ = make_env(rom_path)
+    states_list = [s.strip() for s in states.split(",") if s.strip()] if isinstance(states, str) else (list(states) if states else ["Level1-1"])
+    initial_state = states_list[0] if states_list else "Level1-1"
+
+    env, _ = make_env(rom_path, state=initial_state)
     sim = Simulation(
         rom_path=rom_path,
         save_path=save_path,
         bootstrap_episodes=bootstrap_episodes,
         max_bootstrap_step=max_bootstrap_step,
         policy=policy,
+        states=states_list,
     )
 
     results = []
@@ -80,6 +85,7 @@ def evaluate_agent(
             results.append(
                 {
                     "episode": ep,
+                    "state": sim.current_state,
                     "steps": step,
                     "max_x": ram_info.get("max_x_pos", 0),
                     "max_sub_page": ram_info.get("max_sub_page", 0),
@@ -150,13 +156,14 @@ def evaluate_policies(
     episodes=5,
     max_steps=1000,
     seed=42,
+    states=None,
 ):
     """Evaluate the learned policy against matched RIGHT and bootstrap controls."""
     reports = {
-        "agent": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "agent"),
-        "right_only": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "right_only"),
+        "agent": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "agent", states=states),
+        "right_only": evaluate_agent(rom_path, save_path, episodes, max_steps, 0, 0, seed, "right_only", states=states),
         "bootstrap_only": evaluate_agent(
-            rom_path, save_path, episodes, max_steps, episodes, 600, seed, "bootstrap_only"
+            rom_path, save_path, episodes, max_steps, episodes, 600, seed, "bootstrap_only", states=states
         ),
     }
     agent_x = reports["agent"]["avg_max_x"]
@@ -179,10 +186,11 @@ def main():
     parser.add_argument("--policy", choices=POLICIES, default="agent", help="Policy to evaluate")
     parser.add_argument("--compare-policies", action="store_true", help="Evaluate agent, RIGHT-only, and bootstrap-only controls")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible evaluation trajectories")
+    parser.add_argument("--states", type=str, default="Level1-1", help="Comma-separated list of level states to evaluate (e.g. Level1-1,Level1-2)")
     args = parser.parse_args()
 
     if args.compare_policies:
-        summary = evaluate_policies(args.rom, args.save_path, args.episodes, args.max_steps, args.seed)
+        summary = evaluate_policies(args.rom, args.save_path, args.episodes, args.max_steps, args.seed, states=args.states)
     else:
         summary = evaluate_agent(
             rom_path=args.rom,
@@ -191,6 +199,7 @@ def main():
             max_steps=args.max_steps,
             seed=args.seed,
             policy=args.policy,
+            states=args.states,
         )
 
     if summary is not None:
