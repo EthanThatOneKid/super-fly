@@ -78,6 +78,7 @@ def evaluate_agent(
             terminated = bool(outcome["terminated"]) if outcome else False
             truncated = bool(outcome["truncated"]) if outcome else False
             ram_info = outcome["ram_info"] if outcome else {"max_x_pos": 0, "max_sub_page": 0, "max_page": 0}
+            completed = bool(outcome["completed"]) if outcome else False
             model_jumps = outcome["model_jumps"] if outcome else 0
             assisted_jumps = outcome["assisted_jumps"] if outcome else 0
             model_jump_freq = round(model_jumps / step, 6) if step else 0.0
@@ -95,6 +96,8 @@ def evaluate_agent(
                     "terminated": terminated,
                     "truncated": truncated,
                     "died": bool(outcome["died"]) if outcome else False,
+                    "completed": completed,
+                    "completion_step": step if completed else None,
                     "survived_to_limit": step >= max_steps and not terminated,
                     "model_jumps": model_jumps,
                     "assisted_jumps": assisted_jumps,
@@ -130,6 +133,8 @@ def evaluate_agent(
         "page_milestone_rate": round(sum(1 for r in results if r["max_page"] > 0) / len(results), 4) if results else 0.0,
         "avg_steps": round(sum(r["steps"] for r in results) / len(results), 2) if results else 0,
         "episodes_died": sum(r["died"] for r in results),
+        "episodes_completed": sum(r["completed"] for r in results),
+        "completion_rate": round(sum(r["completed"] for r in results) / len(results), 4) if results else 0.0,
         "episodes_terminated": sum(r["terminated"] for r in results),
         "episodes_truncated": sum(r["truncated"] for r in results),
         "episodes_survived_to_limit": sum(r["survived_to_limit"] for r in results),

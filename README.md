@@ -16,10 +16,10 @@ browser in real time.
   the NES frame, resampled to a 28×28 ommatidia grid.
 - **Dual dopamine-modulated STDP** — PAM (reward/progress) and PPL1
   (punishment/death) pathways with an inverted update sign.
-- **RAM-based reward** — progress, stagnation, and death are read straight from
-  SMB RAM addresses (`0x006D` level page, `0x0086` sub-page X, `0x000E` death state).
+- **RAM-based reward and completion** — progress, stagnation, death, and a 30-frame Level 1-1 completion detector are read straight from SMB RAM addresses (`0x006D` level page, `0x0086` sub-page X, `0x000E` player state, `0x0770` operating mode).
 - **Autonomous Jump & Bootstrap Controller** — model-driven jump priority with 4-frame hold and 24-step refractory timing, plus periodic bootstrap pulses and STDP teaching trace injection for assisted jumps.
-- **Deterministic Evaluation Harness** — isolated evaluation script (`eval_harness.py`) for benchmarking agent progress across episodes.
+- **Deterministic Evaluation Harness** — isolated evaluation script (`eval_harness.py`) for benchmarking progress and actual Level 1-1 completions across episodes.
+- **Offline teacher pipeline** — `teacher.py` records a successful, checksummed Level 1-1 trajectory; `pretrain.py` applies supervised motor eligibility-trace updates before online STDP.
 - **Live web streaming dashboard** — MJPEG video feed + JSON stats endpoint via
   Flask, with the shared SNN core in `simulation.py`.
 
@@ -96,7 +96,7 @@ thread and exposes:
 
 - `/` — dashboard page with `#video_feed` stream and polled stats
 - `/video_feed` — MJPEG stream of the telemetry overlay
-- `/stats` — JSON episode stats (`episode`, `max_x`, `best_x`, `pam`, `ppl1`, `step`)
+- `/stats` — JSON episode stats (`episode`, `max_x`, `best_x`, `completed`, `completion_streak`, `pam`, `ppl1`, `step`)
 
 Model weights are checkpointed to `--save-path` whenever a new best distance is
 reached, in both CLI and web modes.
@@ -113,6 +113,10 @@ reached, in both CLI and web modes.
 | `stdp.py`        | `DualDopamineSTDP` — PAM/PPL1-modulated weight updates               |
 | `ram_tracker.py` | `MarioRAMTracker` — dopamine from SMB RAM (progress/death)           |
 | `eval_harness.py`| Isolated deterministic evaluation harness for SNN performance      |
+| `teacher.py`     | Deterministic Level 1-1 teacher trajectory collector              |
+| `trajectory.py`  | Versioned compressed trajectory shards and checksum validation    |
+| `pretrain.py`   | Supervised motor eligibility-trace pretraining                    |
+| `REACH_1_1_PLAN.md` | Issue triage and the reach-1-1 acceptance gate                 |
 | `telemetry.py`   | `DrosophilaTelemetryOverlay` — layer heatmaps + dopamine gauges      |
 | `rom_importer.py`| Copies/imports a NES ROM into stable-retro's data dir               |
 
@@ -127,8 +131,18 @@ python -m unittest discover -s tests
 Run the deterministic evaluation harness (eval_mode with seed for reproducible evaluation trajectories without updating weights):
 
 ```sh
-python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
+python eval_harness.py --episodes 5 --max-steps 2000 --seed 42
 ```
+
+Create a reproducible successful teacher shard, then pre-train the motor layer:
+
+```sh
+python teacher.py --rom "roms/Super Mario Bros. (World).nes" --output /tmp/super-fly-teacher-dataset
+python pretrain.py --dataset /tmp/super-fly-teacher-dataset --output /tmp/super-fly-pretrained.pth
+python eval_harness.py --save-path /tmp/super-fly-pretrained.pth --episodes 5 --max-steps 2000 --seed 42
+```
+
+The teacher trajectory is an upper-bound and data-generation tool, not evidence that the SNN has learned. The learned checkpoint must be evaluated with `completion_rate`; max X alone is not a Level 1-1 success.
 
 ## How it works
 
@@ -137,10 +151,13 @@ python eval_harness.py --episodes 5 --max-steps 1000 --seed 42
    spike trains.
 2. Spikes propagate through the 4-layer connectome (`connectome.py`); motor output
    is filtered through jump hold/refractory timing.
-3. SMB RAM is read each step to produce PAM (progress) and PPL1 (death /
-   stagnation) dopamine signals, which update weights via inverted-sign STDP
-   (`stdp.py`). During bootstrap-assisted jumps, motor post-eligibility traces are
-   injected so STDP teaches the motor layer appropriate jump timing.
+3. SMB RAM is read each step to produce PAM (progress, obstacle clearance, and
+   completion) and PPL1 (death / stagnation) dopamine signals, which update weights
+   via inverted-sign STDP (`stdp.py`). Completion requires 30 qualifying flagpole
+   frames and is never counted as a death.
+4. Offline teacher trajectories can initialize the motor layer with supervised
+   eligibility-trace updates before online dopamine-modulated STDP. The pre-trained
+   checkpoint is still required to pass model-only evaluation.
 
 ## How we teach the fly
 
