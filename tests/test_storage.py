@@ -137,6 +137,49 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             expected_event_path = os.path.join(sim1.run_storage.events_dir, f"{evt.event_id}.json")
             self.assertTrue(os.path.exists(expected_event_path))
 
+    def test_stale_reservation_crash_recovery(self):
+        """Verify that if a worker process crashes mid-write after reserving an idempotency key,
+        subsequent calls detect and reconcile the stale reservation without returning phantom events.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = os.path.join(tmpdir, "runs")
+            storage = RunHistoryStore(runs_dir=runs_dir, run_id="run_crash_test")
+            idem_key = "crash_key_101"
+
+            crashed_event = RunEvent(
+                event_id="evt_crashed_99",
+                run_id=storage.run_id,
+                event_type="crashed_event",
+                timestamp="2026-09-19T06:00:00Z",
+                idempotency_key=idem_key,
+                data={"part": 1},
+            )
+
+            # Simulate process crash: write idempotency claim with status 'reserved' without writing event/projection
+            idem_path = os.path.join(storage.idempotency_dir, f"{idem_key}.json")
+            atomic_write_json({"status": "reserved", "event": crashed_event.to_dict()}, idem_path)
+
+            # Verify event file does not exist yet (crashed before write)
+            event_file = os.path.join(storage.events_dir, "evt_crashed_99.json")
+            self.assertFalse(os.path.exists(event_file))
+
+            # Retry recording event with same idempotency key
+            storage2 = RunHistoryStore(runs_dir=runs_dir, run_id=storage.run_id)
+            reconciled_evt = storage2.record_event(
+                "crashed_event",
+                {"part": 1},
+                event_id="evt_crashed_99",
+                idempotency_key=idem_key,
+            )
+
+            # Assert stale reservation was reconciled and event + projection files now exist
+            self.assertEqual(reconciled_evt.event_id, "evt_crashed_99")
+            self.assertTrue(os.path.exists(event_file))
+
+            with open(idem_path, "r", encoding="utf-8") as f:
+                idem_record = json.load(f)
+            self.assertEqual(idem_record["status"], "completed")
+
     def test_concurrent_duplicate_deliveries_race_safety(self):
         """Verify 8 concurrent deliveries with identical idempotency_key produce exactly 1 event file,
         1 projection file, and 1 idempotency file, and all threads return identical event IDs.

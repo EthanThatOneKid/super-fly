@@ -321,21 +321,52 @@ class RunStorage:
         return event
 
     def _wait_and_load_idempotent_event(self, idem_path: str) -> RunEvent:
-        """Poll and load idempotent event record once written by winning worker."""
+        """Poll and load idempotent event record once written by winning worker.
+        Reconciles stale/crashed reservations if winning process crashed mid-write.
+        """
         for _ in range(50):
             if os.path.exists(idem_path):
                 try:
                     with open(idem_path, "r", encoding="utf-8") as f:
                         rec = json.load(f)
-                    if "event" in rec and rec["event"]:
-                        return RunEvent(**rec["event"])
+                    event_dict = rec.get("event")
+                    if event_dict:
+                        event_id = event_dict.get("event_id")
+                        event_file = os.path.join(self.events_dir, f"{event_id}.json")
+                        # If reservation completed and event file exists, return directly
+                        if rec.get("status") == "completed" and os.path.exists(event_file):
+                            return RunEvent(**event_dict)
                 except Exception:
                     pass
             time.sleep(0.01)
-        # Fallback load
+
+        # Timed out waiting or winner crashed while reservation was pending -> reconcile stale reservation
         with open(idem_path, "r", encoding="utf-8") as f:
             rec = json.load(f)
-        return RunEvent(**rec["event"])
+
+        event_dict = rec["event"]
+        event = RunEvent(**event_dict)
+        event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
+
+        if not os.path.exists(event_file):
+            atomic_write_json(event.to_dict(), event_file, allow_overwrite=True)
+
+        written_proj = False
+        while not written_proj:
+            self.projection_sequence += 1
+            proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
+            try:
+                atomic_write_json(
+                    {"sequence": self.projection_sequence, "event_id": event.event_id, "type": event.event_type},
+                    proj_file,
+                    allow_overwrite=False,
+                )
+                written_proj = True
+            except FileExistsError:
+                continue
+
+        atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
+        return event
 
     def migrate_legacy_checkpoint(self, legacy_path: str) -> dict:
         """
