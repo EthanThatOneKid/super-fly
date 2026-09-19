@@ -4,6 +4,7 @@ import random
 import shutil
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 
@@ -115,6 +116,58 @@ class TestRunStorageAndHistoryStore(unittest.TestCase):
             self.assertEqual(manifest["policy_config"]["policy"], "agent")
             self.assertEqual(manifest["policy_config"]["seed"], seed)
             self.assertEqual(manifest["git_commit_sha"], get_git_commit_sha())
+
+    def test_run_identity_continuity_across_restarts(self):
+        """Verify process restart adopts checkpoint's original run_id and maintains run-history continuity."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = os.path.join(tmpdir, "runs")
+            save_path = os.path.join(tmpdir, "model.pth")
+
+            sim1 = Simulation(save_path=save_path, runs_dir=runs_dir)
+            original_run_id = sim1.run_storage.run_id
+            sim1.save_checkpoint()
+
+            # Restart simulation using save_path without passing explicit run_id
+            sim2 = Simulation(save_path=save_path, runs_dir=runs_dir)
+
+            self.assertEqual(sim2.run_storage.run_id, original_run_id)
+
+            # Record event on restarted simulation -> asserts event persists under original run_id directory
+            evt = sim2.run_storage.record_event("restart_step", {"step": 1})
+            expected_event_path = os.path.join(sim1.run_storage.events_dir, f"{evt.event_id}.json")
+            self.assertTrue(os.path.exists(expected_event_path))
+
+    def test_concurrent_duplicate_deliveries_race_safety(self):
+        """Verify 8 concurrent deliveries with identical idempotency_key produce exactly 1 event file,
+        1 projection file, and 1 idempotency file, and all threads return identical event IDs.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runs_dir = os.path.join(tmpdir, "runs")
+            storage = RunHistoryStore(runs_dir=runs_dir, run_id="run_race_test")
+            idem_key = "race_idem_key_42"
+
+            def worker(thread_idx):
+                return storage.record_event(
+                    "concurrent_pulse",
+                    {"thread": thread_idx},
+                    delivery_id=f"del_thread_{thread_idx}",
+                    idempotency_key=idem_key,
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(worker, i) for i in range(8)]
+                results = [f.result() for f in futures]
+
+            event_ids = {r.event_id for r in results}
+            self.assertEqual(len(event_ids), 1)  # All 8 threads returned the winner's event_id
+
+            event_files = os.listdir(storage.events_dir)
+            proj_files = os.listdir(storage.projections_dir)
+            idem_files = os.listdir(storage.idempotency_dir)
+
+            self.assertEqual(len(event_files), 1)
+            self.assertEqual(len(proj_files), 1)
+            self.assertEqual(len(idem_files), 1)
 
     def test_reopening_run_recovers_sequence_projection(self):
         """Verify reopening an existing run_id recovers the next sequence sequence and appends history."""

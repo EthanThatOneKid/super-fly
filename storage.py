@@ -234,13 +234,57 @@ class RunStorage:
         """
         now_str = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+        # Atomic idempotency claim
         if idempotency_key:
             idem_path = os.path.join(self.idempotency_dir, f"{idempotency_key}.json")
             if os.path.exists(idem_path):
-                # Duplicate delivery / event detected; load existing idempotency record
-                with open(idem_path, "r", encoding="utf-8") as f:
-                    rec = json.load(f)
-                return RunEvent(**rec["event"])
+                return self._wait_and_load_idempotent_event(idem_path)
+
+            if event_id is None:
+                event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
+
+            tentative_event = RunEvent(
+                event_id=event_id,
+                run_id=self.run_id,
+                event_type=event_type,
+                timestamp=now_str,
+                tenant_scope=self.tenant_scope,
+                repository_id=self.repository_id,
+                delivery_id=delivery_id,
+                idempotency_key=idempotency_key,
+                data=data,
+            )
+
+            # Claim idempotency key atomically before writing event/projection files
+            claim_data = {"status": "reserved", "event": tentative_event.to_dict()}
+            try:
+                atomic_write_json(claim_data, idem_path, allow_overwrite=False)
+            except FileExistsError:
+                # Lost race to concurrent claim -> load winner's record
+                return self._wait_and_load_idempotent_event(idem_path)
+
+            # Successfully reserved idempotency key -> write event & projection
+            event = tentative_event
+            event_file = os.path.join(self.events_dir, f"{event.event_id}.json")
+            atomic_write_json(event.to_dict(), event_file, allow_overwrite=allow_overwrite)
+
+            written_proj = False
+            while not written_proj:
+                self.projection_sequence += 1
+                proj_file = os.path.join(self.projections_dir, f"{self.projection_sequence:06d}.json")
+                try:
+                    atomic_write_json(
+                        {"sequence": self.projection_sequence, "event_id": event.event_id, "type": event_type},
+                        proj_file,
+                        allow_overwrite=False,
+                    )
+                    written_proj = True
+                except FileExistsError:
+                    continue
+
+            # Update idempotency claim to complete status
+            atomic_write_json({"status": "completed", "event": event.to_dict()}, idem_path, allow_overwrite=True)
+            return event
 
         if event_id is None:
             event_id = f"evt_{time.time_ns()}_{os.urandom(2).hex()}"
@@ -274,18 +318,24 @@ class RunStorage:
             except FileExistsError:
                 continue
 
-        if idempotency_key:
-            idem_path = os.path.join(self.idempotency_dir, f"{idempotency_key}.json")
-            try:
-                atomic_write_json(
-                    {"idempotency_key": idempotency_key, "event": event.to_dict()},
-                    idem_path,
-                    allow_overwrite=False,
-                )
-            except FileExistsError:
-                pass
-
         return event
+
+    def _wait_and_load_idempotent_event(self, idem_path: str) -> RunEvent:
+        """Poll and load idempotent event record once written by winning worker."""
+        for _ in range(50):
+            if os.path.exists(idem_path):
+                try:
+                    with open(idem_path, "r", encoding="utf-8") as f:
+                        rec = json.load(f)
+                    if "event" in rec and rec["event"]:
+                        return RunEvent(**rec["event"])
+                except Exception:
+                    pass
+            time.sleep(0.01)
+        # Fallback load
+        with open(idem_path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        return RunEvent(**rec["event"])
 
     def migrate_legacy_checkpoint(self, legacy_path: str) -> dict:
         """

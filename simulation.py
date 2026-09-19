@@ -92,6 +92,15 @@ class Simulation:
             self.states = ["Level1-1"]
         self.current_state = self.states[0]
 
+        # Peek at save_path if present to check for existing run_id
+        if run_id is None and os.path.exists(save_path):
+            try:
+                peek_payload = torch.load(save_path, weights_only=False)
+                if isinstance(peek_payload, dict) and "run_id" in peek_payload:
+                    run_id = peek_payload["run_id"]
+            except Exception:
+                pass
+
         self.run_storage = RunStorage(runs_dir=runs_dir, run_id=run_id)
 
         self.preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
@@ -130,6 +139,15 @@ class Simulation:
         payload = self.run_storage.load_checkpoint(path_or_dir)
 
         if isinstance(payload, dict) and "model_state_dict" in payload:
+            # Rebind run_storage to loaded run_id if adopting existing run identity
+            if "run_id" in payload and payload["run_id"] and self.run_storage.run_id != payload["run_id"]:
+                self.run_storage = RunStorage(
+                    runs_dir=self.run_storage.runs_dir,
+                    run_id=payload["run_id"],
+                    tenant_scope=payload.get("tenant_scope", "default"),
+                    repository_id=payload.get("repository_id", "super-fly"),
+                )
+
             self.model.load_state_dict(payload["model_state_dict"])
             if "episode" in payload:
                 self.current_episode = payload["episode"]
