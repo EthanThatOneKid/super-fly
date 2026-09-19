@@ -617,6 +617,64 @@ class TestSuperFlyRegression(unittest.TestCase):
         new_model.load_state_dict(legacy_state_dict, strict=True)
         self.assertEqual(new_model.layer1_2.v_thresh.shape, (256,))
 
+    def test_episode_boundary_reset_prevents_state_leakage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "model.pth")
+            sim1 = Simulation(save_path=save_path, seed=42)
+            env1 = MockEnv()
+            obs1 = sim1.reset_episode(env1)
+
+            # Step through several frames with visual features to build up voltages, traces, and recurrent spikes
+            np.random.seed(42)
+            for _ in range(10):
+                random_obs = np.random.randint(0, 256, (240, 256, 3), dtype=np.uint8)
+                sim1.step(env1, random_obs, train=True)
+
+            # Assert state is non-zero
+            self.assertFalse(torch.all(sim1.model.layer1_2.v == 0))
+            self.assertFalse(torch.all(sim1.model.recurrent_central_spikes == 0))
+
+            # Reset episode
+            sim1.reset_episode(env1)
+
+            # Verify all dynamic states are zeroed
+            for layer in (sim1.model.layer1_2, sim1.model.layer2_3, sim1.model.layer3_4, sim1.model.feedback_3_2):
+                self.assertTrue(torch.all(layer.v == 0))
+                self.assertTrue(torch.all(layer.spikes == 0))
+                self.assertTrue(torch.all(layer.trace_pre == 0))
+                self.assertTrue(torch.all(layer.trace_post == 0))
+                self.assertTrue(torch.all(layer.rate_trace == 0))
+            self.assertTrue(torch.all(sim1.model.recurrent_central_spikes == 0))
+
+            # Compare step results of reset sim1 vs fresh sim2 given identical seed
+            torch.manual_seed(100)
+            res1 = sim1.step(env1, obs1, train=False)
+
+            sim2 = Simulation(save_path=os.path.join(tmpdir, "model2.pth"), seed=42)
+            env2 = MockEnv()
+            obs2 = sim2.reset_episode(env2)
+            torch.manual_seed(100)
+            res2 = sim2.step(env2, obs2, train=False)
+
+            self.assertEqual(res1["action_idx"], res2["action_idx"])
+            torch.testing.assert_close(res1["layer_acts"]["motor_ganglion"], res2["layer_acts"]["motor_ganglion"])
+
+    def test_bounded_settle_steps_validation_and_persistence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "settle_model.pth")
+
+            with self.assertRaises(ValueError):
+                Simulation(save_path=save_path, settle_steps=0)
+            with self.assertRaises(ValueError):
+                Simulation(save_path=save_path, settle_steps=11)
+
+            sim = Simulation(save_path=save_path, settle_steps=4)
+            self.assertEqual(sim.settle_steps, 4)
+            sim.save_checkpoint()
+
+            sim_loaded = Simulation(save_path=save_path)
+            self.assertEqual(sim_loaded.settle_steps, 4)
+
 
 if __name__ == "__main__":
     unittest.main()
