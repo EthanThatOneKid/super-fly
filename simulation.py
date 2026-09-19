@@ -15,6 +15,8 @@ DEFAULT_ROM_PATH = "roms/Super Mario Bros. (World).nes"
 DEFAULT_SAVE_PATH = "drosophila_snn.pth"
 DEFAULT_LR = 0.005
 DEFAULT_MAX_STEPS = 2000
+MAX_SETTLE_STEPS = 10
+DEFAULT_SETTLE_STEPS = 3
 
 # NES Action mapping: [NOOP, RIGHT+RUN, JUMP, RIGHT+RUN+JUMP]
 # NES retro action array (12 buttons): [B, Y, SELECT, START, UP, DOWN, LEFT, RIGHT, A, MODE, L, R]
@@ -70,7 +72,7 @@ class Simulation:
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
                  bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
-                 states=None, runs_dir="runs", run_id=None, seed=None):
+                 states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
@@ -81,6 +83,10 @@ class Simulation:
         if policy not in {"agent", "right_only", "bootstrap_only"}:
             raise ValueError(f"Unknown evaluation policy: {policy}")
         self.policy = policy
+
+        if not (1 <= settle_steps <= MAX_SETTLE_STEPS):
+            raise ValueError(f"settle_steps must be between 1 and {MAX_SETTLE_STEPS}")
+        self.settle_steps = settle_steps
 
         if states is None:
             self.states = ["Level1-1"]
@@ -164,6 +170,8 @@ class Simulation:
                 if "lr" in p_cfg:
                     self.lr = p_cfg["lr"]
                     self.stdp.lr = self.lr
+                if "settle_steps" in p_cfg:
+                    self.settle_steps = p_cfg["settle_steps"]
                 if "seed" in p_cfg and p_cfg["seed"] is not None:
                     self.seed = p_cfg["seed"]
 
@@ -291,18 +299,22 @@ class Simulation:
         self.bootstrap_active = self.policy != "right_only" and effective_max > 0 and self.current_step <= effective_max
 
         features, _ = self.preprocessor.process_frame(obs)
-        spikes = self.preprocessor.generate_poisson_spikes(features)
+        accumulated_motor_spikes = torch.zeros(self.model.num_motor_ganglion)
+        layer_acts = None
 
-        if train:
-            self.model.train()
-            motor_spikes, layer_acts = self.model(spikes)
-        else:
-            self.model.eval()
-            with torch.no_grad():
-                motor_spikes, layer_acts = self.model(spikes)
+        for _ in range(self.settle_steps):
+            spikes = self.preprocessor.generate_poisson_spikes(features)
+            if train:
+                self.model.train()
+                m_spikes, layer_acts = self.model(spikes)
+            else:
+                self.model.eval()
+                with torch.no_grad():
+                    m_spikes, layer_acts = self.model(spikes)
+            accumulated_motor_spikes += m_spikes
 
         # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = self.policy == "agent" and (motor_spikes[2] > 0 or motor_spikes[3] > 0)
+        jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
         action_source = "right"
         execute_jump = False
         is_assisted = False
@@ -364,6 +376,7 @@ class Simulation:
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
+            "settle_steps": self.settle_steps,
             "died": died,
             "completed": completed,
         })
