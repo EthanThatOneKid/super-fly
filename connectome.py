@@ -110,6 +110,50 @@ class LIFNeuronLayer(nn.Module):
         return self.spikes
 
 
+class TemporalMotorDecoder(nn.Module):
+    """
+    Persistent Leaky-Integrator Temporal Motor Decoder:
+    Decodes motor actions (NOOP, RIGHT, JUMP, RIGHT+JUMP) by integrating spike
+    activations from both the Central Complex (128 units) and Thoracic Motor Ganglion (4 units)
+    across temporal settling steps:
+    U[t] = \\alpha_dec * U[t-1] + W_cc * S_cc[t] + W_mg * S_mg[t]
+    """
+    def __init__(self, num_central_complex: int = 128, num_motor_ganglion: int = 4,
+                 num_actions: int = 4, tau_decoder: float = 15.0, dt: float = 1.0):
+        super().__init__()
+        self.num_central_complex = num_central_complex
+        self.num_motor_ganglion = num_motor_ganglion
+        self.num_actions = num_actions
+
+        self.alpha_dec = float(np.exp(-dt / tau_decoder))
+
+        # Direct synaptic readout weights from Central Complex and Motor Ganglion
+        self.weight_cc = nn.Parameter(torch.randn(num_actions, num_central_complex) * (2.0 / num_central_complex)**0.5)
+        self.weight_mg = nn.Parameter(torch.randn(num_actions, num_motor_ganglion) * (2.0 / num_motor_ganglion)**0.5)
+
+        # Persistent temporal hidden state
+        self.register_buffer('state_trace', torch.zeros(num_actions))
+
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        with torch.no_grad():
+            self.weight_cc -= self.weight_cc.mean(dim=1, keepdim=True)
+            self.weight_mg.copy_(torch.eye(self.num_actions) * 1.5 - 0.2)
+
+    def reset_state(self):
+        self.state_trace.zero_()
+
+    def forward(self, central_spikes: torch.Tensor, motor_spikes: torch.Tensor) -> torch.Tensor:
+        """
+        Integrates central complex interneuron spikes and thoracic motor ganglion spikes
+        into persistent temporal state trace. Returns current accumulated logits U[t].
+        """
+        drive = torch.matmul(self.weight_cc, central_spikes) + torch.matmul(self.weight_mg, motor_spikes)
+        self.state_trace = self.alpha_dec * self.state_trace + drive
+        return self.state_trace
+
+
 class DrosophilaConnectomeSNN(nn.Module):
     """
     4-Layer Drosophila Connectome SNN with Recurrent Central Complex -> Optic Lobe Feedback:
@@ -118,6 +162,7 @@ class DrosophilaConnectomeSNN(nn.Module):
     - Layer 3: Central Complex / Mushroom Body (Recurrent Interneurons)
     - Layer 4: Thoracic Motor Ganglion (Action Output Neurons: NOOP, RIGHT, JUMP, RIGHT+JUMP)
     - Feedback 3->2: Central Complex / Mushroom Body to Optic Lobe Recurrent Loop
+    - Temporal Motor Decoder: Leaky integrator decoding action choices from CC and MG spikes
     """
     def __init__(self, num_ommatidia: int = 784, channels_per_ommatidium: int = 5):
         super().__init__()
@@ -142,6 +187,9 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.feedback_3_2 = LIFNeuronLayer(self.num_central_complex, self.num_optic_lobe, tau_m=20.0)
         self.register_buffer('recurrent_central_spikes', torch.zeros(self.num_central_complex))
 
+        # Temporal Motor Decoder Readout
+        self.motor_decoder = TemporalMotorDecoder(self.num_central_complex, self.num_motor_ganglion)
+
         self.initialize_weights()
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
@@ -149,6 +197,13 @@ class DrosophilaConnectomeSNN(nn.Module):
         recurrent_key = prefix + 'recurrent_central_spikes'
         if recurrent_key not in state_dict:
             state_dict[recurrent_key] = torch.zeros(self.num_central_complex)
+
+        decoder_prefix = prefix + 'motor_decoder.'
+        has_decoder_keys = any(k.startswith(decoder_prefix) for k in state_dict.keys())
+        if not has_decoder_keys:
+            for k, v in self.motor_decoder.state_dict().items():
+                state_dict[decoder_prefix + k] = v.clone()
+
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
 
@@ -201,12 +256,13 @@ class DrosophilaConnectomeSNN(nn.Module):
             self.feedback_3_2.weight.copy_(w_fb)
 
     def reset_state(self):
-        """Reset internal state of all LIF layers and recurrent buffers."""
+        """Reset internal state of all LIF layers, motor decoder, and recurrent buffers."""
         self.layer1_2.reset_state()
         self.layer2_3.reset_state()
         self.layer3_4.reset_state()
         self.feedback_3_2.reset_state()
         self.recurrent_central_spikes.zero_()
+        self.motor_decoder.reset_state()
 
     def reset_homeostasis(self):
         """Reset threshold values and firing rate traces across all layers."""
@@ -231,6 +287,7 @@ class DrosophilaConnectomeSNN(nn.Module):
 
         central_spikes = self.layer2_3(optic_spikes)
         motor_spikes = self.layer3_4(central_spikes)
+        decoder_logits = self.motor_decoder(central_spikes, motor_spikes)
 
         # Update recurrent state buffer with current timestep Central Complex activity
         self.recurrent_central_spikes.copy_(central_spikes.detach())
@@ -240,7 +297,8 @@ class DrosophilaConnectomeSNN(nn.Module):
             'optic_lobe': optic_spikes,
             'central_complex': central_spikes,
             'motor_ganglion': motor_spikes,
-            'feedback_3_2': fb_spikes
+            'feedback_3_2': fb_spikes,
+            'decoder_logits': decoder_logits,
         }
 
         return motor_spikes, layer_activations

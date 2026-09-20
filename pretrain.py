@@ -56,13 +56,15 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                 for frame, action in zip(frames, actions):
                     action_int = int(action)
                     features, _ = preprocessor.process_frame(frame)
-                    accumulated_motor = torch.zeros(model.num_motor_ganglion)
+                    accumulated_decoder = torch.zeros(model.num_motor_ganglion)
 
                     for step_idx in range(settle_steps):
                         spikes = preprocessor.generate_poisson_spikes(features)
-                        motor_spikes, _ = model(spikes)
-                        accumulated_motor += motor_spikes
+                        motor_spikes, layer_acts = model(spikes)
+                        decoder_logits = layer_acts["decoder_logits"]
+                        accumulated_decoder += decoder_logits
 
+                        # Update Thoracic Motor Ganglion weights
                         target = target_rate_vector(action_int)
                         error = target - motor_spikes
                         eligibility = model.layer3_4.trace_pre.clone()
@@ -70,7 +72,19 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                         model.layer3_4.weight.sub_(model.layer3_4.weight.mean(dim=1, keepdim=True))
                         model.layer3_4.weight.clamp_(-3.0, 3.0)
 
-                    correct += int(int(accumulated_motor.argmax()) == action_int)
+                        # Update Temporal Motor Decoder weights
+                        target_logits = torch.zeros(4)
+                        target_logits[action_int] = 1.0
+                        dec_error = target_logits - decoder_logits
+
+                        model.motor_decoder.weight_cc.add_(lr * dec_error.unsqueeze(1) * layer_acts["central_complex"].unsqueeze(0))
+                        model.motor_decoder.weight_cc.sub_(model.motor_decoder.weight_cc.mean(dim=1, keepdim=True))
+                        model.motor_decoder.weight_cc.clamp_(-3.0, 3.0)
+
+                        model.motor_decoder.weight_mg.add_(lr * dec_error.unsqueeze(1) * layer_acts["motor_ganglion"].unsqueeze(0))
+                        model.motor_decoder.weight_mg.clamp_(-3.0, 3.0)
+
+                    correct += int(int(accumulated_decoder.argmax()) == action_int)
                     updates += 1
 
     metadata = {

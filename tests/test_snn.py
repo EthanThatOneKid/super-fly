@@ -675,6 +675,35 @@ class TestSuperFlyRegression(unittest.TestCase):
             sim_loaded = Simulation(save_path=save_path)
             self.assertEqual(sim_loaded.settle_steps, 4)
 
+    def test_temporal_motor_decoder_leaky_integration_and_reset(self):
+        model = DrosophilaConnectomeSNN()
+        cc_spikes = torch.ones(128)
+        mg_spikes = torch.tensor([0.0, 1.0, 0.0, 0.0])
+
+        logits1 = model.motor_decoder(cc_spikes, mg_spikes)
+        self.assertEqual(logits1.shape, (4,))
+        self.assertFalse(torch.all(logits1 == 0))
+
+        # Second step accumulates with decay
+        logits2 = model.motor_decoder(cc_spikes, mg_spikes)
+        self.assertTrue(torch.all(logits2 != logits1))
+
+        # Reset clears state trace
+        model.motor_decoder.reset_state()
+        self.assertTrue(torch.all(model.motor_decoder.state_trace == 0))
+
+    def test_temporal_motor_decoder_checkpoint_compatibility(self):
+        model = DrosophilaConnectomeSNN()
+        state_dict = model.state_dict()
+
+        # Remove motor_decoder keys to simulate older checkpoint
+        legacy_dict = {k: v for k, v in state_dict.items() if not k.startswith("motor_decoder.")}
+
+        new_model = DrosophilaConnectomeSNN()
+        new_model.load_state_dict(legacy_dict, strict=True)
+        self.assertEqual(new_model.motor_decoder.weight_cc.shape, (4, 128))
+        self.assertEqual(new_model.motor_decoder.weight_mg.shape, (4, 4))
+
 
 if __name__ == "__main__":
     unittest.main()

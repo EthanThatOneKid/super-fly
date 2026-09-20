@@ -300,6 +300,7 @@ class Simulation:
 
         features, _ = self.preprocessor.process_frame(obs)
         accumulated_motor_spikes = torch.zeros(self.model.num_motor_ganglion)
+        accumulated_decoder_logits = torch.zeros(self.model.num_motor_ganglion)
         layer_acts = None
 
         for _ in range(self.settle_steps):
@@ -312,9 +313,14 @@ class Simulation:
                 with torch.no_grad():
                     m_spikes, layer_acts = self.model(spikes)
             accumulated_motor_spikes += m_spikes
+            if layer_acts is not None and "decoder_logits" in layer_acts:
+                accumulated_decoder_logits += layer_acts["decoder_logits"]
 
-        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
+        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP) or temporal decoder logits
+        decoded_action = int(accumulated_decoder_logits.argmax().item())
+        jump_requested = self.policy == "agent" and (
+            accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0 or decoded_action in (2, 3)
+        )
         action_source = "right"
         execute_jump = False
         is_assisted = False
