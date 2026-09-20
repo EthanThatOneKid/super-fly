@@ -2,10 +2,34 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+
+class FastSigmoidSpike(torch.autograd.Function):
+    r"""
+    FastSigmoid surrogate gradient function for spike generation during backpropagation.
+    Forward: $S = \mathbb{I}(V \ge V_{\text{thresh}})$
+    Backward: $\frac{\partial S}{\partial V} = \frac{1}{(1 + \beta |V - V_{\text{thresh}}|)^2}$
+    """
+    @staticmethod
+    def forward(ctx, v: torch.Tensor, v_thresh: torch.Tensor) -> torch.Tensor:
+        ctx.save_for_backward(v, v_thresh)
+        return (v >= v_thresh).float()
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        v, v_thresh = ctx.saved_tensors
+        beta = 5.0
+        grad_v = grad_output / (1.0 + beta * torch.abs(v - v_thresh)).pow(2)
+        return grad_v, None
+
+
+def surrogate_spike(v: torch.Tensor, v_thresh: torch.Tensor) -> torch.Tensor:
+    return FastSigmoidSpike.apply(v, v_thresh)
+
+
 class LIFNeuronLayer(nn.Module):
     r"""
-    Leaky Integrate-and-Fire (LIF) Neuron Layer with support for eligibility traces
-    and dynamic homeostatic intrinsic plasticity.
+    Leaky Integrate-and-Fire (LIF) Neuron Layer with support for eligibility traces,
+    dynamic homeostatic intrinsic plasticity, and surrogate gradient sequence learning.
     V[t] = \alpha V[t-1] + I[t] - S[t-1] V_{reset}
     S[t] = \mathbb{I}(V[t] \ge V_{thresh})
     """
@@ -83,41 +107,60 @@ class LIFNeuronLayer(nn.Module):
         Forward step for 1D spike tensor of shape (in_features,).
         Returns output spike tensor of shape (out_features,).
         """
-        # Synaptic current
         current = torch.matmul(self.weight, input_spikes)
         current = current - current.mean()
 
-        # Membrane potential integration with leak
-        # Reset potential for neurons that fired in the previous step
-        self.v = self.alpha * self.v * (1.0 - self.spikes) + current * self.current_gain
+        if torch.is_grad_enabled():
+            v_next = self.alpha * self.v * (1.0 - self.spikes) + current * self.current_gain
+            spikes_next = surrogate_spike(v_next, self.v_thresh)
+            v_after_reset = torch.where(spikes_next > 0, torch.tensor(self.v_reset, device=v_next.device), v_next)
+            self.v = v_after_reset
+            self.spikes = spikes_next
+        else:
+            self.v = self.alpha * self.v * (1.0 - self.spikes) + current * self.current_gain
+            self.spikes = (self.v >= self.v_thresh).float()
+            self.v = torch.where(self.spikes > 0, torch.tensor(self.v_reset, device=self.v.device), self.v)
 
-        # Firing condition
-        self.spikes = (self.v >= self.v_thresh).float()
-
-        # Soft / Hard reset
-        self.v = torch.where(self.spikes > 0, torch.tensor(self.v_reset, device=self.v.device), self.v)
-
-        # Update eligibility traces: trace = decay * trace + spike
-        self.trace_pre = self.decay_trace * self.trace_pre + input_spikes
-        self.trace_post = self.decay_trace * self.trace_post + self.spikes
+        # Update eligibility traces
+        self.trace_pre = self.decay_trace * self.trace_pre + input_spikes.detach()
+        self.trace_post = self.decay_trace * self.trace_post + self.spikes.detach()
 
         # Homeostatic intrinsic plasticity: update threshold toward target firing rate during training
         if self.training:
-            self.rate_trace = (1.0 - self.gamma_homeo) * self.rate_trace + self.gamma_homeo * self.spikes
+            self.rate_trace = (1.0 - self.gamma_homeo) * self.rate_trace + self.gamma_homeo * self.spikes.detach()
             delta_v = self.eta_homeo * (self.rate_trace - self.target_rate)
             self.v_thresh = (self.v_thresh + delta_v).clamp(self.v_thresh_min, self.v_thresh_max)
 
         return self.spikes
 
 
+class TemporalMotorDecoder(nn.Module):
+    """
+    Temporal Motor Decoder / Readout layer over temporal Drosophila SNN state:
+    Decodes action decisions (NOOP, RIGHT, JUMP, RIGHT+JUMP) from Central Complex
+    interneuron activity, Thoracic Motor Ganglion output spikes, and recurrent dynamics.
+    """
+    def __init__(self, cc_dim: int = 128, motor_dim: int = 4, hidden_dim: int = 64, num_actions: int = 4):
+        super().__init__()
+        self.fc1 = nn.Linear(cc_dim + motor_dim, hidden_dim)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(hidden_dim, num_actions)
+
+    def forward(self, cc_spikes: torch.Tensor, motor_spikes: torch.Tensor) -> torch.Tensor:
+        state = torch.cat([cc_spikes, motor_spikes], dim=-1)
+        return self.fc2(self.relu(self.fc1(state)))
+
+
 class DrosophilaConnectomeSNN(nn.Module):
     """
-    4-Layer Drosophila Connectome SNN with Recurrent Central Complex -> Optic Lobe Feedback:
+    4-Layer Drosophila Connectome SNN with Recurrent Central Complex -> Optic Lobe Feedback
+    and Temporal Motor Decoder:
     - Layer 1: Sensory Ommatidia Input (~800 ommatidia x 5 channels = 3920 units)
     - Layer 2: Optic Lobe / Medulla / Lobula (Motion & Edge Neuropils)
     - Layer 3: Central Complex / Mushroom Body (Recurrent Interneurons)
     - Layer 4: Thoracic Motor Ganglion (Action Output Neurons: NOOP, RIGHT, JUMP, RIGHT+JUMP)
     - Feedback 3->2: Central Complex / Mushroom Body to Optic Lobe Recurrent Loop
+    - Temporal Motor Decoder: Action readout layer over temporal SNN states
     """
     def __init__(self, num_ommatidia: int = 784, channels_per_ommatidium: int = 5):
         super().__init__()
@@ -142,6 +185,14 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.feedback_3_2 = LIFNeuronLayer(self.num_central_complex, self.num_optic_lobe, tau_m=20.0)
         self.register_buffer('recurrent_central_spikes', torch.zeros(self.num_central_complex))
 
+        # Temporal Motor Decoder Readout
+        self.decoder = TemporalMotorDecoder(
+            cc_dim=self.num_central_complex,
+            motor_dim=self.num_motor_ganglion,
+            hidden_dim=64,
+            num_actions=4,
+        )
+
         self.initialize_weights()
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
@@ -159,11 +210,7 @@ class DrosophilaConnectomeSNN(nn.Module):
         while maintaining zero-mean row alignment across weight matrices.
         """
         with torch.no_grad():
-            # Layer 1->2: Sensory Ommatidia to Optic Lobe
-            # Shape: (num_optic_lobe=256, num_inputs=3920)
             w1 = torch.randn(self.num_optic_lobe, self.num_inputs) * (2.0 / self.num_inputs)**0.5
-            # Apply feature-gain weighting for Canny edges (ch 0) and RIGHT motion (ch 1)
-            # Channel ordering per ommatidium: 0=edges, 1=vx_right, 2=vx_left, 3=vy_down, 4=vy_up
             reshaped_w1 = w1.view(self.num_optic_lobe, self.num_inputs // 5, 5)
             reshaped_w1[:, :, 0] *= 1.25  # Edge sensitivity
             reshaped_w1[:, :, 1] *= 1.25  # Right motion sensitivity
@@ -171,34 +218,33 @@ class DrosophilaConnectomeSNN(nn.Module):
             w1 -= w1.mean(dim=1, keepdim=True)
             self.layer1_2.weight.copy_(w1)
 
-            # Layer 2->3: Optic Lobe to Central Complex / Mushroom Body
-            # Shape: (num_central_complex=128, num_optic_lobe=256)
             w2 = torch.randn(self.num_central_complex, self.num_optic_lobe) * (2.0 / self.num_optic_lobe)**0.5
             w2 -= w2.mean(dim=1, keepdim=True)
             self.layer2_3.weight.copy_(w2)
 
-            # Layer 3->4: Central Complex to Thoracic Motor Ganglion
-            # Shape: (num_motor_ganglion=4, num_central_complex=128)
-            # Actions: [0: NOOP, 1: RIGHT, 2: JUMP, 3: RIGHT+JUMP]
             w3 = torch.randn(self.num_motor_ganglion, self.num_central_complex) * (2.0 / self.num_central_complex)**0.5
             half_cc = self.num_central_complex // 2
-            # Structure central complex interneuron pathways to excite movement and jump actions:
-            w3[0, :half_cc] -= 0.30  # NOOP suppression on primary pathways
+            w3[0, :half_cc] -= 0.30
             w3[0, half_cc:] += 0.30
-            w3[1, :half_cc] += 0.15  # RIGHT motor excitation on primary pathways
+            w3[1, :half_cc] += 0.15
             w3[1, half_cc:] -= 0.15
-            w3[2, :half_cc] += 0.20  # JUMP motor excitation on primary pathways
+            w3[2, :half_cc] += 0.20
             w3[2, half_cc:] -= 0.20
-            w3[3, :half_cc] += 0.25  # RIGHT+JUMP motor excitation on primary pathways
+            w3[3, :half_cc] += 0.25
             w3[3, half_cc:] -= 0.25
             w3 -= w3.mean(dim=1, keepdim=True)
             self.layer3_4.weight.copy_(w3)
 
-            # Feedback 3->2: Central Complex to Optic Lobe
-            # Shape: (num_optic_lobe=256, num_central_complex=128)
             w_fb = torch.randn(self.num_optic_lobe, self.num_central_complex) * (2.0 / self.num_central_complex)**0.5
             w_fb -= w_fb.mean(dim=1, keepdim=True)
             self.feedback_3_2.weight.copy_(w_fb)
+
+    def enforce_bio_constraints(self):
+        """Apply zero-mean row centering and [-3.0, 3.0] clamping on SNN weight matrices."""
+        with torch.no_grad():
+            for layer in (self.layer1_2, self.layer2_3, self.layer3_4, self.feedback_3_2):
+                layer.weight.sub_(layer.weight.mean(dim=1, keepdim=True))
+                layer.weight.clamp_(-3.0, 3.0)
 
     def reset_state(self):
         """Reset internal state of all LIF layers and recurrent buffers."""
@@ -222,17 +268,14 @@ class DrosophilaConnectomeSNN(nn.Module):
             motor_spikes: Tensor of shape (4,) containing spikes for actions.
             layer_activations: dict containing spiking activity across layers for visualization.
         """
-        # Process recurrent feedback from Central Complex spikes from previous timestep
         fb_spikes = self.feedback_3_2(self.recurrent_central_spikes)
 
-        # Optic Lobe integrates sensory input and recurrent feedback spikes
         sensory_optic_spikes = self.layer1_2(sensory_spikes)
         optic_spikes = torch.clamp(sensory_optic_spikes + fb_spikes, 0.0, 1.0)
 
         central_spikes = self.layer2_3(optic_spikes)
         motor_spikes = self.layer3_4(central_spikes)
 
-        # Update recurrent state buffer with current timestep Central Complex activity
         self.recurrent_central_spikes.copy_(central_spikes.detach())
 
         layer_activations = {
@@ -244,3 +287,7 @@ class DrosophilaConnectomeSNN(nn.Module):
         }
 
         return motor_spikes, layer_activations
+
+    def decode_action(self, central_spikes: torch.Tensor, motor_spikes: torch.Tensor) -> torch.Tensor:
+        """Decode action logits from Central Complex and Thoracic Motor Ganglion states."""
+        return self.decoder(central_spikes, motor_spikes)

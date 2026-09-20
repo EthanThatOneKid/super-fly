@@ -630,6 +630,9 @@ class TestSuperFlyRegression(unittest.TestCase):
                 random_obs = np.random.randint(0, 256, (240, 256, 3), dtype=np.uint8)
                 sim1.step(env1, random_obs, train=True)
 
+            # Save checkpoint with updated weights
+            sim1.save_checkpoint()
+
             # Assert state is non-zero
             self.assertFalse(torch.all(sim1.model.layer1_2.v == 0))
             self.assertFalse(torch.all(sim1.model.recurrent_central_spikes == 0))
@@ -646,11 +649,11 @@ class TestSuperFlyRegression(unittest.TestCase):
                 self.assertTrue(torch.all(layer.rate_trace == 0))
             self.assertTrue(torch.all(sim1.model.recurrent_central_spikes == 0))
 
-            # Compare step results of reset sim1 vs fresh sim2 given identical seed
+            # Compare step results of reset sim1 vs fresh sim2 given identical seed and weights
             torch.manual_seed(100)
             res1 = sim1.step(env1, obs1, train=False)
 
-            sim2 = Simulation(save_path=os.path.join(tmpdir, "model2.pth"), seed=42)
+            sim2 = Simulation(save_path=save_path, seed=42)
             env2 = MockEnv()
             obs2 = sim2.reset_episode(env2)
             torch.manual_seed(100)

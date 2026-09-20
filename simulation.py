@@ -145,7 +145,6 @@ class Simulation:
         payload = self.run_storage.load_checkpoint(path_or_dir)
 
         if isinstance(payload, dict) and "model_state_dict" in payload:
-            # Rebind run_storage to loaded run_id if adopting existing run identity
             if "run_id" in payload and payload["run_id"] and self.run_storage.run_id != payload["run_id"]:
                 self.run_storage = RunStorage(
                     runs_dir=self.run_storage.runs_dir,
@@ -162,7 +161,6 @@ class Simulation:
             if "best_x" in payload:
                 self.best_x = payload["best_x"]
 
-            # Restore policy configuration if serialized
             if "policy_config" in payload:
                 p_cfg = payload["policy_config"]
                 if "policy" in p_cfg:
@@ -175,7 +173,6 @@ class Simulation:
                 if "seed" in p_cfg and p_cfg["seed"] is not None:
                     self.seed = p_cfg["seed"]
 
-            # Restore curriculum control state if serialized
             if "curriculum_state" in payload:
                 cs = payload["curriculum_state"]
                 self.current_state = cs.get("current_state", self.current_state)
@@ -313,8 +310,15 @@ class Simulation:
                     m_spikes, layer_acts = self.model(spikes)
             accumulated_motor_spikes += m_spikes
 
-        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
+        cc_spikes = layer_acts.get("central_complex", torch.zeros(self.model.num_central_complex)) if isinstance(layer_acts, dict) else torch.zeros(self.model.num_central_complex)
+        logits = self.model.decode_action(cc_spikes, accumulated_motor_spikes)
+        decoded_action = logits.argmax().item()
+
+        jump_requested = self.policy == "agent" and (
+            decoded_action in (2, 3) or
+            accumulated_motor_spikes[2] > 0 or
+            accumulated_motor_spikes[3] > 0
+        )
         action_source = "right"
         execute_jump = False
         is_assisted = False
@@ -328,7 +332,7 @@ class Simulation:
             action_source = "model_hold"
         elif jump_requested and self.refractory_counter == 0:
             execute_jump = True
-            self.hold_jump_counter = 3  # Hold for 4 frames total (current frame + 3)
+            self.hold_jump_counter = 3  # Hold for 4 frames total (1 current + 3 hold)
             self.refractory_counter = 24  # 24-step refractory period
             action_source = "model"
             self.model_jumps += 1
@@ -344,12 +348,16 @@ class Simulation:
             self.assisted_jumps += 1
             is_assisted = True
 
-        action_idx = 3 if execute_jump else 1
+        if execute_jump:
+            action_idx = 3
+        elif self.policy == "agent" and decoded_action in (0, 1):
+            action_idx = decoded_action
+        else:
+            action_idx = 1
+
         self.action_source = action_source
 
-        # Teaching / Exploration motor trace injection (training mode only):
-        # If jump is assisted (forced by bootstrap), update layer3_4 post-eligibility trace
-        # so STDP associates active sensory patterns with jump timing.
+        # Teaching / Exploration motor trace injection (training mode only)
         if train and is_assisted:
             with torch.no_grad():
                 self.model.layer3_4.trace_post[3] = self.model.layer3_4.decay_trace * self.model.layer3_4.trace_post[3] + 1.0
@@ -357,7 +365,6 @@ class Simulation:
         obs, reward, terminated, truncated, _ = env.step(ACTION_MAP[action_idx])
 
         ram = env.get_ram()
-        # Override termination with RAM-level death or stable Level 1-1 completion detection.
         died = self.ram_tracker.is_dead(ram)
         completed = self.ram_tracker.update_completion(ram)
         if died or completed:
@@ -390,7 +397,6 @@ class Simulation:
             "ram_info": ram_info,
             "telemetry_info": telemetry_info,
             "layer_acts": layer_acts,
-            "terminated": terminated,
             "terminated": terminated,
             "truncated": truncated,
             "action_source": self.action_source,
