@@ -414,23 +414,46 @@ class TestSuperFlyRegression(unittest.TestCase):
 
         # Check feedback layer shapes and initialization
         self.assertEqual(model.feedback_3_2.weight.shape, (256, 128))
+        self.assertEqual(model.feedback_4_3.weight.shape, (128, 4))
         fb_row_means = model.feedback_3_2.weight.mean(dim=1)
         self.assertTrue(torch.allclose(fb_row_means, torch.zeros_like(fb_row_means), atol=1e-5))
+        eff_row_means = model.feedback_4_3.weight.mean(dim=1)
+        self.assertTrue(torch.allclose(eff_row_means, torch.zeros_like(eff_row_means), atol=1e-5))
 
-        # Initial recurrent buffer should be zero
+        # Initial recurrent buffers should be zero
         self.assertTrue(torch.all(model.recurrent_central_spikes == 0))
+        self.assertTrue(torch.all(model.recurrent_motor_spikes == 0))
 
         # First forward pass
         sensory = torch.rand(3920)
         motor_spikes, activations = model(sensory)
         self.assertIn("feedback_3_2", activations)
+        self.assertIn("feedback_4_3", activations)
 
-        # Recurrent central spikes buffer should now hold step 1 central_complex spikes
+        # Recurrent buffers should now hold step 1 activations
         torch.testing.assert_close(model.recurrent_central_spikes, activations["central_complex"])
+        torch.testing.assert_close(model.recurrent_motor_spikes, activations["motor_ganglion"])
 
-        # Reset state clears recurrent central spikes
+        # Reset state clears recurrent buffers
         model.reset_state()
         self.assertTrue(torch.all(model.recurrent_central_spikes == 0))
+        self.assertTrue(torch.all(model.recurrent_motor_spikes == 0))
+
+    def test_population_rate_temporal_decoder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_path = os.path.join(tmpdir, "test_rate.pth")
+            sim = Simulation(save_path=save_path, bootstrap_episodes=0)
+            env = MockEnv()
+            obs = sim.reset_episode(env)
+
+            # Initial population rate trace should be zero
+            self.assertTrue(torch.all(sim.motor_rate_trace == 0))
+
+            # Simulate step and verify decay and rate integration
+            sim.motor_rate_trace[3] = 0.5
+            old_trace = sim.motor_rate_trace[3].item()
+            sim.step(env, obs, train=False)
+            self.assertNotEqual(sim.motor_rate_trace[3].item(), old_trace)
 
     def test_stdp_updates_feedback_weights(self):
         model = DrosophilaConnectomeSNN()

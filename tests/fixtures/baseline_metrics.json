@@ -1,0 +1,21 @@
+{
+  "baseline": {
+    "repository": "EthanThatOneKid/super-fly",
+    "starting_commit": "856f63692e76e6cca7a46cc663999281644e80de",
+    "measured_baseline": {
+      "best_x": 594,
+      "avg_max_x": 427.4,
+      "completion_rate": 0.0,
+      "death_rate": 0.6,
+      "episodes": 5,
+      "seed": 42,
+      "settle_steps": 3,
+      "bootstrap_assistance_used": false,
+      "teacher_assistance_used": false
+    },
+    "gate_target": {
+      "min_best_x": 3200,
+      "target_completion_rate": 1.0
+    }
+  }
+}
