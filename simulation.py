@@ -130,6 +130,11 @@ class Simulation:
         self.assisted_jumps = 0
         self.bootstrap_active = False
 
+        # Population rate temporal motor decoder state
+        self.motor_rate_trace = torch.zeros(self.model.num_motor_ganglion)
+        self.tau_motor_rate = 10.0
+        self.decay_motor_rate = float(np.exp(-1.0 / self.tau_motor_rate))
+
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
@@ -272,6 +277,7 @@ class Simulation:
         self.hold_jump_counter = 0
         self.refractory_counter = 0
         self.bootstrap_pulse_counter = 0
+        self.motor_rate_trace.zero_()
 
         self.action_source = "right"
         self.model_jumps = 0
@@ -313,8 +319,15 @@ class Simulation:
                     m_spikes, layer_acts = self.model(spikes)
             accumulated_motor_spikes += m_spikes
 
-        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
+        # Update population rate temporal trace across settling frame window
+        mean_step_spikes = accumulated_motor_spikes / float(self.settle_steps)
+        self.motor_rate_trace = self.decay_motor_rate * self.motor_rate_trace + mean_step_spikes
+
+        # Decode motor request using both frame-step spikes and integrated population rate trace
+        rate_jump_signal = float(self.motor_rate_trace[2] + self.motor_rate_trace[3])
+        jump_requested = self.policy == "agent" and (
+            accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0 or rate_jump_signal >= 0.15
+        )
         action_source = "right"
         execute_jump = False
         is_assisted = False

@@ -142,6 +142,10 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.feedback_3_2 = LIFNeuronLayer(self.num_central_complex, self.num_optic_lobe, tau_m=20.0)
         self.register_buffer('recurrent_central_spikes', torch.zeros(self.num_central_complex))
 
+        # Motor Efference Copy Recurrence (Layer 4 -> Layer 3 Feedback)
+        self.feedback_4_3 = LIFNeuronLayer(self.num_motor_ganglion, self.num_central_complex, tau_m=15.0)
+        self.register_buffer('recurrent_motor_spikes', torch.zeros(self.num_motor_ganglion))
+
         self.initialize_weights()
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
@@ -149,6 +153,17 @@ class DrosophilaConnectomeSNN(nn.Module):
         recurrent_key = prefix + 'recurrent_central_spikes'
         if recurrent_key not in state_dict:
             state_dict[recurrent_key] = torch.zeros(self.num_central_complex)
+
+        motor_key = prefix + 'recurrent_motor_spikes'
+        if motor_key not in state_dict:
+            state_dict[motor_key] = torch.zeros(self.num_motor_ganglion)
+
+        # Backwards compatibility for models saved before feedback_4_3 was added
+        fb43_prefix = prefix + 'feedback_4_3.'
+        if not any(k.startswith(fb43_prefix) for k in state_dict.keys()):
+            for k, v in self.feedback_4_3.state_dict().items():
+                state_dict[fb43_prefix + k] = v.clone()
+
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict,
                                       missing_keys, unexpected_keys, error_msgs)
 
@@ -200,13 +215,24 @@ class DrosophilaConnectomeSNN(nn.Module):
             w_fb -= w_fb.mean(dim=1, keepdim=True)
             self.feedback_3_2.weight.copy_(w_fb)
 
+            # Feedback 4->3: Motor Efference Copy to Central Complex
+            # Shape: (num_central_complex=128, num_motor_ganglion=4)
+            w_eff = torch.randn(self.num_central_complex, self.num_motor_ganglion) * (2.0 / self.num_motor_ganglion)**0.5
+            # Reinforce motor efference feedback loops for forward and jump persistence
+            w_eff[:half_cc, 1] += 0.2  # RIGHT motor feedback
+            w_eff[:half_cc, 3] += 0.3  # RIGHT+JUMP motor feedback
+            w_eff -= w_eff.mean(dim=1, keepdim=True)
+            self.feedback_4_3.weight.copy_(w_eff)
+
     def reset_state(self):
         """Reset internal state of all LIF layers and recurrent buffers."""
         self.layer1_2.reset_state()
         self.layer2_3.reset_state()
         self.layer3_4.reset_state()
         self.feedback_3_2.reset_state()
+        self.feedback_4_3.reset_state()
         self.recurrent_central_spikes.zero_()
+        self.recurrent_motor_spikes.zero_()
 
     def reset_homeostasis(self):
         """Reset threshold values and firing rate traces across all layers."""
@@ -214,6 +240,7 @@ class DrosophilaConnectomeSNN(nn.Module):
         self.layer2_3.reset_homeostasis()
         self.layer3_4.reset_homeostasis()
         self.feedback_3_2.reset_homeostasis()
+        self.feedback_4_3.reset_homeostasis()
 
     def forward(self, sensory_spikes: torch.Tensor):
         """
@@ -225,22 +252,30 @@ class DrosophilaConnectomeSNN(nn.Module):
         # Process recurrent feedback from Central Complex spikes from previous timestep
         fb_spikes = self.feedback_3_2(self.recurrent_central_spikes)
 
+        # Process motor efference copy feedback from previous timestep motor spikes
+        efference_spikes = self.feedback_4_3(self.recurrent_motor_spikes)
+
         # Optic Lobe integrates sensory input and recurrent feedback spikes
         sensory_optic_spikes = self.layer1_2(sensory_spikes)
         optic_spikes = torch.clamp(sensory_optic_spikes + fb_spikes, 0.0, 1.0)
 
-        central_spikes = self.layer2_3(optic_spikes)
+        # Central Complex integrates Optic Lobe output and Motor Efference feedback
+        cc_from_optic = self.layer2_3(optic_spikes)
+        central_spikes = torch.clamp(cc_from_optic + efference_spikes, 0.0, 1.0)
+
         motor_spikes = self.layer3_4(central_spikes)
 
-        # Update recurrent state buffer with current timestep Central Complex activity
+        # Update recurrent state buffers with current timestep Central Complex & Motor activity
         self.recurrent_central_spikes.copy_(central_spikes.detach())
+        self.recurrent_motor_spikes.copy_(motor_spikes.detach())
 
         layer_activations = {
             'ommatidia': sensory_spikes,
             'optic_lobe': optic_spikes,
             'central_complex': central_spikes,
             'motor_ganglion': motor_spikes,
-            'feedback_3_2': fb_spikes
+            'feedback_3_2': fb_spikes,
+            'feedback_4_3': efference_spikes
         }
 
         return motor_spikes, layer_activations

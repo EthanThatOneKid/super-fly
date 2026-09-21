@@ -70,6 +70,16 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                         model.layer3_4.weight.sub_(model.layer3_4.weight.mean(dim=1, keepdim=True))
                         model.layer3_4.weight.clamp_(-3.0, 3.0)
 
+                        # Update Layer 4 -> Layer 3 Efference Copy weights
+                        if action_int in (1, 3):
+                            eff_target = torch.zeros(model.num_central_complex)
+                            eff_target[:model.num_central_complex // 2] = 0.5
+                            eff_error = eff_target - model.recurrent_central_spikes
+                            eff_elig = model.feedback_4_3.trace_pre.clone()
+                            model.feedback_4_3.weight.add_(lr * eff_error.unsqueeze(1) * eff_elig.unsqueeze(0))
+                            model.feedback_4_3.weight.sub_(model.feedback_4_3.weight.mean(dim=1, keepdim=True))
+                            model.feedback_4_3.weight.clamp_(-3.0, 3.0)
+
                     correct += int(int(accumulated_motor.argmax()) == action_int)
                     updates += 1
 
