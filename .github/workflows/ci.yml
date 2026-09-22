@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      # Report every platform, not just the first failure.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # torch's default manylinux wheel pulls several GB of CUDA libraries that a
+      # CPU-only test suite never touches. Installing the CPU build first keeps
+      # the Linux job's download small; the core install below then sees torch
+      # already satisfied.
+      - name: Install CPU-only torch (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install core dependencies
+        shell: bash
+        run: |
+          # requirements.txt minus the emulator, so a platform without a
+          # stable-retro wheel can still install and test the rest of the project.
+          python - <<'PY' > core-requirements.txt
+          import pathlib
+
+          kept = [
+              line.strip()
+              for line in pathlib.Path("requirements.txt").read_text(encoding="utf-8-sig").splitlines()
+              if line.strip()
+              and not line.lstrip().startswith("#")
+              and "stable-retro" not in line
+          ]
+          print("\n".join(kept))
+          PY
+          echo "core requirements: $(tr '\n' ' ' < core-requirements.txt)"
+          python -m pip install --upgrade pip
+          python -m pip install -r core-requirements.txt
+
+      - name: Install emulator (stable-retro, wheels only)
+        id: emulator
+        # Several platforms publish no stable-retro wheel (Windows has none at
+        # all, and macOS has arm64 only), and building from source wants a full
+        # C++ toolchain, so CI never does it. The suite must pass without the
+        # emulator; this step only reports which platforms can supply one.
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if python -m pip install --only-binary=:all: "stable-retro>=0.1.0"; then
+            echo "emulator=installed" >> "$GITHUB_OUTPUT"
+          else
+            echo "emulator=unavailable" >> "$GITHUB_OUTPUT"
+            echo "::warning::stable-retro has no wheel for this platform; tests run without the emulator."
+            exit 1
+          fi
+
+      - name: Byte-compile every module
+        shell: bash
+        run: python -m compileall -q -x '(__pycache__|\.venv)' .
+
+      - name: Run regression suite
+        shell: bash
+        run: python -m unittest discover -s tests -v
+
+      - name: Report environment
+        if: always()
+        shell: bash
+        run: |
+          echo "emulator wheel: ${{ steps.emulator.outputs.emulator || 'unavailable' }}"
+          python - <<'PY'
+          import importlib
+          import platform
+          import sys
+
+          print("python:", sys.version.replace("\n", " "))
+          print("platform:", platform.platform())
+          for name in ("torch", "numpy", "cv2", "flask", "stable_retro"):
+              try:
+                  module = importlib.import_module(name)
+              except Exception as exc:  # noqa: BLE001 - diagnostics only
+                  print(f"  {name}: UNAVAILABLE ({type(exc).__name__}: {exc})")
+              else:
+                  print(f"  {name}: {getattr(module, '__version__', 'unknown')}")
+          PY
