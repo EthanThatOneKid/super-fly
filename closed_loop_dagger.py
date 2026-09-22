@@ -42,6 +42,7 @@ from dagger import (
     aggregate_rollout_metadata,
     build_dagger_dataset,
     collect_on_policy_rollout,
+    label_aliasing_report,
 )
 from eval_harness import evaluate_policy
 from offline_env import OfflineMarioEnv
@@ -313,6 +314,8 @@ def build_arg_parser():
     parser.add_argument("--eval-seeds", default=RESERVED_SEEDS, help="Reserved seeds for model-only evaluation")
     parser.add_argument("--settle-steps", type=int, default=DEFAULT_SETTLE_STEPS, help="Bounded settle window per frame")
     parser.add_argument("--action-cadence", type=int, default=DEFAULT_ACTION_CADENCE, help="Frames per macro-action chunk")
+    parser.add_argument("--label-matching", choices=("phase", "position_only"), default="phase",
+                        help="Recovery-target matching: on the candidate's phase (default) or progress only")
     parser.add_argument("--recovery-lag-steps", type=int, default=DEFAULT_RECOVERY_LAG_STEPS, help="Teacher-schedule steps behind which a rollout counts as diverged")
     parser.add_argument("--recovery-lag-px", type=int, default=DEFAULT_RECOVERY_LAG_PX, help="Progress deficit in pixels that marks a divergence")
     parser.add_argument("--window-frames", type=int, default=DEFAULT_WINDOW_FRAMES, help="Frames in each recovery window")
@@ -326,11 +329,20 @@ def build_arg_parser():
 
 
 def _write_markdown_report(report, path):
+    audit = report.get("teacher_labelling") or {}
     lines = [
         "# Closed-loop DAgger experiment report (issue #30)",
         "",
         f"- mode: `{report['mode']}`",
         f"- environment: `{report['environment']['env_kind']}`",
+        f"- recovery-target matching: `{report['config'].get('label_matching', 'phase')}`",
+        (
+            f"- teacher labelling audit: {audit.get('mislabelled_positions')} of "
+            f"{audit.get('positions_swept')} ground states labelled differently by "
+            f"progress only ({audit.get('action_transitions')})"
+            if audit.get("has_phase") else
+            "- teacher labelling audit: no phase contrast in this shard"
+        ),
         f"- model-only policy: `{report['config']['policy']}`",
         f"- reserved seeds: {report['config']['eval_seeds']}",
         f"- settle steps: {report['config']['settle_steps']}, action cadence: {report['config']['action_cadence']}",
@@ -375,6 +387,7 @@ def build_report(args):
         "episodes": args.episodes,
         "max_steps": args.max_steps,
         "rollout_steps": args.rollout_steps,
+        "label_matching": args.label_matching,
         "recovery_lag_steps": args.recovery_lag_steps,
         "recovery_lag_px": args.recovery_lag_px,
         "window_frames": args.window_frames,
@@ -424,8 +437,14 @@ def build_report(args):
 
     iterations = []
     stop_reason = "baseline_only"
+    label_audit = None
     if args.mode == "dagger":
         labeler = TeacherLabeler.from_dataset(teacher_dataset)
+        # The audit is the evidence for whatever ``--label-matching`` chose, computed
+        # from the teacher shard alone rather than from the run it is explaining.
+        label_audit = label_aliasing_report(teacher_dataset)
+        if config["label_matching"] == "position_only":
+            labeler = labeler.without_phase()
         iterations, stop_reason = run_dagger(config, teacher_dataset, labeler, env_factory, env_kind)
 
     final_evaluation = iterations[-1]["evaluation"] if iterations else baseline_evaluation
@@ -447,6 +466,7 @@ def build_report(args):
         },
         "config": config,
         "teacher_dataset": teacher_info,
+        "teacher_labelling": label_audit,
         "baseline": {
             "checkpoint": baseline_checkpoint,
             "checkpoint_sha256": compute_sha256(baseline_checkpoint) if os.path.exists(baseline_checkpoint) else None,
