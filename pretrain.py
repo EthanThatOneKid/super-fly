@@ -13,6 +13,7 @@ from macro_decoder import (
     MAX_CHUNK_FRAMES,
     RUN_ACTION,
     calibrate_jump_margin,
+    decision_quality,
 )
 from simulation import DEFAULT_SAVE_PATH, MAX_SETTLE_STEPS, DEFAULT_SETTLE_STEPS
 from trajectory import dataset_provenance, iter_dataset
@@ -21,6 +22,26 @@ from vision import OmmatidiaVisionPreprocessor
 TARGET_RATE = 0.05
 CHOSEN_RATE = 0.90
 DEFAULT_LR = 0.0005
+#: Bound on every trainable weight, shared with online STDP.
+WEIGHT_CLAMP = 3.0
+
+#: Which layers supervised pretraining may move.
+#:
+#: ``frozen`` fits only the ``layer3_4`` motor readout, leaving the connectome at its
+#: initialization heuristic -- a linear probe on fixed random features, which is the
+#: ceiling the closed-loop runs kept hitting. ``linear_feedback`` also trains the
+#: visual pathway, chaining the motor error back to each layer's *output* units
+#: through the transposed next-layer weights (``W_next.T @ e_next``). That is the
+#: linear part of backprop with no autograd and no surrogate derivative, it reduces
+#: exactly to the rule the readout has always used, and it needs no extra feedback
+#: matrices, so nothing new enters the checkpoint.
+VISUAL_PATHWAY_MODES = ("frozen", "linear_feedback")
+#: Layers the visual-pathway mode trains, beyond the ``layer3_4`` readout.
+VISUAL_PATHWAY_LAYERS = ("layer2_3", "layer1_2", "feedback_3_2")
+#: Calibration replays pooled into one margin. A single replay is one Poisson draw
+#: per decision point, which is noisy enough that the chosen boundary swings wildly
+#: across evaluation seeds; averaging a few draws is what makes the margin stable.
+DEFAULT_CALIBRATION_REPLAYS = 3
 
 
 def target_rate_vector(action: int, width: int = 4) -> torch.Tensor:
@@ -36,6 +57,114 @@ def _samples_by_origin(provenance: Dict[str, object]) -> Dict[str, int]:
         origin = str(shard.get("provenance", {}).get("origin", "unknown"))
         counts[origin] = counts.get(origin, 0) + int(shard["samples"])
     return counts
+
+
+def _dataset_env_kind(dataset_dir) -> str | None:
+    """The environment a dataset declares, from dataset metadata or its first shard."""
+    info = dataset_provenance(dataset_dir)
+    kind = info.get("metadata", {}).get("env_kind")
+    if kind:
+        return str(kind)
+    for shard in info["shards"]:
+        kind = shard.get("provenance", {}).get("env_kind")
+        if kind:
+            return str(kind)
+    return None
+
+
+def _apply_delta_rule(layer, error: torch.Tensor, lr: float) -> None:
+    """One row-centred, clamped delta step on a LIF layer's weights.
+
+    ``error`` is the correction for the layer's *output* units and ``trace_pre`` is
+    that layer's own pre-synaptic eligibility trace, so the update stays local to the
+    layer. Rows are re-centred and clamped to the same bound online STDP uses, which
+    is what keeps a deep chain of these updates from drifting into a constant offset.
+    """
+    eligibility = layer.trace_pre.clone()
+    layer.weight.add_(lr * error.unsqueeze(1) * eligibility.unsqueeze(0))
+    layer.weight.sub_(layer.weight.mean(dim=1, keepdim=True))
+    layer.weight.clamp_(-WEIGHT_CLAMP, WEIGHT_CLAMP)
+
+
+def output_errors(model: DrosophilaConnectomeSNN, motor_error: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """Credit for every trainable layer's output units, derived from the motor error.
+
+    The transposed weight matrices already form the chain the forward pass walks --
+    ``motor(4) -> central(128) -> optic(256)`` -- so ``e_layer = W_next.T @ e_next``
+    needs no random feedback matrices and adds no state to the checkpoint.
+    ``layer1_2`` and ``feedback_3_2`` both write into the optic-lobe layer that
+    ``layer2_3`` reads, so they share the error measured there.
+    """
+    central_error = model.layer3_4.weight.t().matmul(motor_error)
+    optic_error = model.layer2_3.weight.t().matmul(central_error)
+    return {
+        "layer3_4": motor_error,
+        "layer2_3": central_error,
+        "layer1_2": optic_error,
+        "feedback_3_2": optic_error,
+    }
+
+
+def _weight_deltas(model: DrosophilaConnectomeSNN,
+                   initial: Dict[str, torch.Tensor]) -> Dict[str, Dict[str, float | None]]:
+    """How far each trainable layer actually moved (audit, not a metric).
+
+    A null result is only interpretable next to this: a mode that claims to train the
+    visual pathway but leaves it within noise of its initialization has not been
+    tested, it has been skipped.
+    """
+    deltas: Dict[str, Dict[str, float | None]] = {}
+    for name, before in initial.items():
+        after = getattr(model, name).weight.detach()
+        delta = float((after - before).norm())
+        norm = float(before.norm())
+        deltas[name] = {
+            "l2_delta": round(delta, 6),
+            "l2_initial": round(norm, 6),
+            "relative": round(delta / norm, 6) if norm else None,
+        }
+    return deltas
+
+
+def measure_chunk_decisions(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
+                            dataset, stride: int, settle_steps: int, seed: int,
+                            calibration_replays: int = DEFAULT_CALIBRATION_REPLAYS,
+                            margin: float | None = None) -> Dict[str, object]:
+    """Chunk-decision quality on a labelled dataset, with no emulator in the loop.
+
+    The emulator is the expensive, hard-to-reproduce part of a round, so the decision
+    ceiling has to be measurable without it. Replays the supervised chunks, pools
+    ``calibration_replays`` Poisson draws, and reports how well the jump/run evidence
+    separates the teacher's two chunk types.
+
+    Args:
+        dataset: dataset directory (loaded and checksum-verified) or loaded shards.
+        margin: when given, quality is reported at that margin instead of fitting one
+            (the held-out protocol: fit on the training shards, apply unchanged).
+
+    Returns:
+        the calibration (or fixed-margin) report plus how many replays fed it.
+    """
+    shards = dataset if isinstance(dataset, list) else list(iter_dataset(dataset))
+    if not shards:
+        raise ValueError("decision-quality measurement needs at least one shard")
+    if calibration_replays < 1:
+        raise ValueError("calibration_replays must be at least 1")
+
+    evidence_diffs, jump_labels = [], []
+    for replay in range(calibration_replays):
+        replay_diffs, replay_labels = decision_evidence(
+            model, preprocessor, shards, stride, settle_steps, seed + replay
+        )
+        evidence_diffs.extend(replay_diffs)
+        jump_labels.extend(replay_labels)
+
+    quality = (calibrate_jump_margin(evidence_diffs, jump_labels) if margin is None
+               else decision_quality(evidence_diffs, jump_labels, margin))
+    quality["replays"] = calibration_replays
+    quality["replay_seeds"] = [seed + replay for replay in range(calibration_replays)]
+    quality["decisions_per_replay"] = len(replay_diffs)
+    return quality
 
 
 def decision_evidence(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
@@ -69,22 +198,29 @@ def decision_evidence(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVis
     return diffs, labels
 
 
-#: Calibration replays pooled into one margin. A single replay is one Poisson draw
-#: per decision point, which is noisy enough that the chosen boundary swings wildly
-#: across evaluation seeds; averaging a few draws is what makes the margin stable.
-DEFAULT_CALIBRATION_REPLAYS = 3
-
-
 def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_LR,
                          stride: int = 1, settle_steps: int = DEFAULT_SETTLE_STEPS,
                          seed: int = 42,
-                         calibration_replays: int = DEFAULT_CALIBRATION_REPLAYS) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
-    """Supervised motor-eligibility pretraining over trajectory shards.
+                         calibration_replays: int = DEFAULT_CALIBRATION_REPLAYS,
+                         visual_pathway: str = "frozen",
+                         visual_lr: float | None = None,
+                         report_dataset_dir: str | None = None) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
+    """Supervised pretraining over trajectory shards.
 
     ``stride`` is the action cadence: one supervised target per cadence frames,
     matching the macro-action chunk length the controller executes. Each shard is a
     separate episode segment, so the recurrent SNN state and eligibility traces are
     explicitly reset at every shard boundary.
+
+    ``visual_pathway`` selects what is allowed to move: ``frozen`` fits only the
+    ``layer3_4`` motor readout (the long-standing behaviour) and ``linear_feedback``
+    also trains ``layer1_2``/``layer2_3``/``feedback_3_2``, so the decision is made on
+    learned visual features rather than on fixed random ones. Both modes share one
+    learning rule; see ``output_errors``.
+
+    ``report_dataset_dir`` adds a quality report on a dataset the weights never
+    trained on, using the margin fitted on the training shards. One episode is one
+    shard, so a held-out half has to be materialised first (``trajectory.slice_dataset``).
     """
     if epochs <= 0 or lr <= 0 or stride <= 0:
         raise ValueError("epochs, lr, and stride must be positive")
@@ -92,12 +228,29 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         raise ValueError(f"settle_steps must be between 1 and {MAX_SETTLE_STEPS}")
     if calibration_replays < 1:
         raise ValueError("calibration_replays must be at least 1")
+    if visual_pathway not in VISUAL_PATHWAY_MODES:
+        raise ValueError(f"visual_pathway must be one of {VISUAL_PATHWAY_MODES}")
+    visual_lr_used = lr if visual_lr is None else float(visual_lr)
+    if visual_pathway != "frozen" and visual_lr_used <= 0:
+        raise ValueError("visual_lr must be positive when the visual pathway is trained")
 
     torch.manual_seed(seed)
     np.random.seed(seed)
     model = DrosophilaConnectomeSNN()
     model.eval()
     preprocessor = OmmatidiaVisionPreprocessor(grid_h=28, grid_w=28)
+
+    layer_lrs = {"layer3_4": lr}
+    if visual_pathway != "frozen":
+        layer_lrs.update({name: visual_lr_used for name in VISUAL_PATHWAY_LAYERS})
+    # Snapshot every layer the audit reports on, not only the ones this mode trains:
+    # a frozen run then *shows* the visual pathway at zero delta instead of leaving
+    # the reader to infer it from an absent key.
+    audited_layers = ("layer3_4",) + VISUAL_PATHWAY_LAYERS
+    initial_weights = {name: getattr(model, name).weight.detach().clone() for name in audited_layers}
+
+    report_env_kind = (None if report_dataset_dir is None
+                       else _require_matching_env_kind(dataset_dir, report_dataset_dir))
 
     shards = list(iter_dataset(dataset_dir))
     if not shards:
@@ -130,12 +283,15 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                         motor_spikes, _ = model(spikes)
                         accumulated_motor += motor_spikes
 
-                        target = target_rate_vector(action_int)
-                        error = target - motor_spikes
-                        eligibility = model.layer3_4.trace_pre.clone()
-                        model.layer3_4.weight.add_(lr * error.unsqueeze(1) * eligibility.unsqueeze(0))
-                        model.layer3_4.weight.sub_(model.layer3_4.weight.mean(dim=1, keepdim=True))
-                        model.layer3_4.weight.clamp_(-3.0, 3.0)
+                        motor_error = target_rate_vector(action_int) - motor_spikes
+                        # Every layer's error is read off the weights *before* any of
+                        # them moves, so the update order cannot change the result.
+                        step_errors = ({"layer3_4": motor_error} if visual_pathway == "frozen"
+                                       else output_errors(model, motor_error))
+                        for layer_name, layer_error in step_errors.items():
+                            _apply_delta_rule(
+                                getattr(model, layer_name), layer_error, layer_lrs[layer_name]
+                            )
 
                     correct += int(int(accumulated_motor.argmax()) == action_int)
                     updates += 1
@@ -143,18 +299,11 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     # Calibrate the macro decoder's jump threshold on the supervised chunks. The
     # readout is offset (run evidence dominates on both classes), so a hard-coded
     # zero margin reads as "never jump" and the controller cannot clear an obstacle.
-    # Pool several replays so the boundary reflects expected evidence rather than
+    # Pooled replays are what make the boundary reflect expected evidence rather than
     # one noisy draw; replay seeds are derived from ``seed`` and thus reproducible.
-    evidence_diffs, jump_labels = [], []
-    for replay in range(calibration_replays):
-        replay_diffs, replay_labels = decision_evidence(
-            model, preprocessor, shards, stride, settle_steps, seed + replay
-        )
-        evidence_diffs.extend(replay_diffs)
-        jump_labels.extend(replay_labels)
-    calibration = calibrate_jump_margin(evidence_diffs, jump_labels)
-    calibration["replays"] = calibration_replays
-    calibration["replay_seeds"] = [seed + replay for replay in range(calibration_replays)]
+    calibration = measure_chunk_decisions(
+        model, preprocessor, shards, stride, settle_steps, seed, calibration_replays
+    )
     decoder_config = {
         "decoder": "bounded_macro_action",
         "chunk_frames": stride,
@@ -182,8 +331,50 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         "dataset": dataset_info,
         "decoder": decoder_config,
         "jump_margin": calibration["margin"],
+        "visual_pathway": visual_pathway,
+        "visual_learning_rate": visual_lr_used if visual_pathway != "frozen" else None,
+        "trained_layers": sorted(layer_lrs),
+        "weight_deltas": _weight_deltas(model, initial_weights),
     }
+    if report_dataset_dir is not None:
+        metadata["held_out_decision_quality"] = _held_out_decision_quality(
+            model, preprocessor, report_dataset_dir, report_env_kind, stride, settle_steps,
+            seed, calibration_replays, calibration["margin"],
+        )
     return model, metadata
+
+
+def _require_matching_env_kind(train_dataset_dir: str, report_dataset_dir: str) -> str | None:
+    """Refuse a held-out dataset collected from a different environment.
+
+    A synthetic shard has the same schema as a real-ROM one, so nothing downstream
+    would notice the frames are fabricated -- the reported number would simply be
+    meaningless. Checked before training, so a mislabelled report costs nothing.
+    """
+    train_kind = _dataset_env_kind(train_dataset_dir)
+    report_kind = _dataset_env_kind(report_dataset_dir)
+    if train_kind and report_kind and train_kind != report_kind:
+        raise ValueError(
+            f"report dataset env_kind {report_kind!r} does not match training dataset {train_kind!r}"
+        )
+    return report_kind
+
+
+def _held_out_decision_quality(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
+                               report_dataset_dir: str, env_kind: str | None, stride: int,
+                               settle_steps: int, seed: int, calibration_replays: int,
+                               margin: float) -> Dict[str, object]:
+    """Chunk-decision quality on a dataset the weights never trained on.
+
+    The margin comes from the training shards and is applied unchanged; re-fitting it
+    on this evidence would report the best available boundary rather than the one the
+    checkpoint actually ships.
+    """
+    quality = measure_chunk_decisions(
+        model, preprocessor, list(iter_dataset(report_dataset_dir)), stride, settle_steps,
+        seed, calibration_replays, margin=margin,
+    )
+    return {"env_kind": env_kind, "dataset": dataset_provenance(report_dataset_dir), **quality}
 
 
 def save_checkpoint(model: DrosophilaConnectomeSNN, path: str, metadata: Dict[str, object]) -> None:
@@ -226,12 +417,31 @@ def main() -> None:
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--settle-steps", type=int, default=DEFAULT_SETTLE_STEPS)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--visual-pathway", choices=VISUAL_PATHWAY_MODES, default="frozen",
+                        help="'frozen' fits only the motor readout; 'linear_feedback' trains the visual pathway too")
+    parser.add_argument("--visual-lr", type=float, default=None,
+                        help="Learning rate for the visual pathway (defaults to --lr)")
+    parser.add_argument("--report-dataset", default=None,
+                        help="Held-out dataset to report chunk-decision quality on, at the training margin")
     args = parser.parse_args()
     model, metadata = pretrain_motor_layer(
-        args.dataset, args.epochs, args.lr, args.stride, args.settle_steps, args.seed
+        args.dataset, args.epochs, args.lr, args.stride, args.settle_steps, args.seed,
+        visual_pathway=args.visual_pathway, visual_lr=args.visual_lr,
+        report_dataset_dir=args.report_dataset,
     )
     save_checkpoint(model, args.output, metadata)
-    print(json.dumps({"checkpoint": os.path.abspath(args.output), **metadata}, indent=2))
+    calibration = metadata["decoder"]["calibration"]
+    print(json.dumps({
+        "checkpoint": os.path.abspath(args.output),
+        "visual_pathway": metadata["visual_pathway"],
+        "motor_argmax_accuracy": round(metadata["motor_argmax_accuracy"], 4),
+        "calibrated_balanced_accuracy": calibration["balanced_accuracy"],
+        "jump_recall": calibration["jump_recall"],
+        "jump_rate": calibration["jump_rate"],
+        "target_jump_rate": calibration["target_jump_rate"],
+        "held_out": metadata.get("held_out_decision_quality", {}).get("balanced_accuracy"),
+        "weight_deltas": metadata["weight_deltas"],
+    }, indent=2))
 
 
 if __name__ == "__main__":

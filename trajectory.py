@@ -144,6 +144,60 @@ def add_shard_file(dataset_dir, source_path, provenance: Dict[str, object] | Non
     return target
 
 
+def slice_dataset(source_dir, target_dir, start: int = 0, stop: int | None = None) -> Dict[str, object]:
+    """Write samples ``[start:stop)`` of a single-shard dataset into a new directory.
+
+    A recorded episode is one shard, so measuring anything on data the weights never
+    saw means materialising the two halves as separate, checksummed datasets. The
+    slice keeps the source provenance and records the offsets it came from, so a
+    held-out number still traces back to the same bytes as the training shard.
+
+    Callers slicing at an action cadence should put the boundary on a cadence
+    multiple: the sampled chunk boundaries are ``frames[::cadence]``, so an unaligned
+    boundary shifts every held-out decision relative to the teacher's own chunks.
+
+    Returns:
+        summary dict with the sample range, the number of shards written and the
+        target directory.
+    """
+    shards = list(iter_dataset(source_dir))
+    if len(shards) != 1:
+        raise ValueError(f"slice_dataset needs a single-shard dataset, got {len(shards)}")
+    shard = shards[0]
+    total = len(shard["actions"])
+    start = int(start)
+    end = total if stop is None else int(stop)
+    if not (0 <= start < end <= total):
+        raise ValueError(f"sample range [{start}, {end}) is outside a {total}-sample shard")
+
+    source_manifest = load_manifest(source_dir)
+    source_entry = source_manifest["shards"][0]
+    provenance = {
+        **source_entry.get("provenance", {}),
+        "slice": {"source_sha256": source_entry["sha256"], "start": start, "stop": end,
+                  "source_samples": total},
+        "samples": end - start,
+    }
+    write_shard(
+        target_dir,
+        list(shard["frames"][start:end]),
+        list(shard["actions"][start:end]),
+        list(shard["ram"][start:end]),
+        list(shard["terminated"][start:end]),
+        list(shard["truncated"][start:end]),
+        metadata=source_manifest.get("metadata", {}),
+        provenance=provenance,
+    )
+    return {
+        "source": str(Path(source_dir).resolve()),
+        "target": str(Path(target_dir).resolve()),
+        "start": start,
+        "stop": end,
+        "samples": end - start,
+        "source_sha256": source_entry["sha256"],
+    }
+
+
 def iter_dataset(dataset_dir) -> Iterator[Dict[str, np.ndarray]]:
     """Yield verified shard payloads for a dataset directory."""
     root = Path(dataset_dir)

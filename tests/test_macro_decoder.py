@@ -9,6 +9,7 @@ from macro_decoder import (
     RUN_ACTION,
     MacroActionDecoder,
     calibrate_jump_margin,
+    decision_quality,
 )
 
 
@@ -217,6 +218,65 @@ class TestJumpMarginCalibration(unittest.TestCase):
             calibrate_jump_margin([-1.0, -2.0], [True])
         with self.assertRaises(ValueError):
             calibrate_jump_margin([-1.0], [True], method="guess")
+
+
+class TestFixedMarginQuality(unittest.TestCase):
+    """Reporting a score at a margin fitted *elsewhere*.
+
+    A calibration fits the best boundary on whatever evidence it is handed, so using
+    the same evidence to then report a score is optimistic. The held-out protocol
+    therefore applies the training margin unchanged, and these tests pin that the two
+    reportings agree at one margin.
+    """
+
+    RUN = [-2.4, -2.2, -2.0, -1.95, -2.1, -2.3]
+    JUMP = [-1.8, -1.6, -1.4, -1.2, -1.0, -0.8]
+
+    def _labelled(self):
+        diffs = self.RUN + self.JUMP
+        return diffs, [False] * len(self.RUN) + [True] * len(self.JUMP)
+
+    def test_quality_at_the_calibrated_margin_matches_the_calibration(self):
+        diffs, labels = self._labelled()
+        calibrated = calibrate_jump_margin(diffs, labels)
+        fixed = decision_quality(diffs, labels, calibrated["margin"])
+
+        self.assertEqual(fixed["method"], "fixed_margin")
+        for key in ("balanced_accuracy", "jump_recall", "run_recall", "jump_rate",
+                    "target_jump_rate", "samples", "jump_samples"):
+            self.assertEqual(fixed[key], calibrated[key], key)
+
+    def test_a_margin_from_elsewhere_is_applied_not_re_fitted(self):
+        diffs, labels = self._labelled()
+
+        never_jump = decision_quality(diffs, labels, max(diffs) + 1.0)
+        self.assertEqual(never_jump["margin"], max(diffs) + 1.0)
+        self.assertEqual(never_jump["jump_rate"], 0.0)
+        self.assertEqual(never_jump["jump_recall"], 0.0)
+        self.assertEqual(never_jump["run_recall"], 1.0)
+        self.assertAlmostEqual(never_jump["balanced_accuracy"], 0.5)
+        # Re-fitting would have found the separating boundary and scored ~1.0.
+        self.assertLess(never_jump["balanced_accuracy"],
+                        calibrate_jump_margin(diffs, labels)["balanced_accuracy"])
+
+    def test_an_absent_class_reports_none_rather_than_zero(self):
+        """A held-out split with no jump chunk scores no recall for jumps: saying so
+        is honest where a 0.0 would look like a measured failure."""
+        only_run = decision_quality([-1.0, -2.0], [False, False], 0.0)
+        self.assertIsNone(only_run["jump_recall"])
+        self.assertIsNone(only_run["balanced_accuracy"])
+        self.assertEqual(only_run["run_recall"], 1.0)
+
+        only_jump = decision_quality([1.0, 2.0], [True, True], 0.0)
+        self.assertIsNone(only_jump["run_recall"])
+        self.assertIsNone(only_jump["balanced_accuracy"])
+        self.assertEqual(only_jump["jump_recall"], 1.0)
+
+    def test_malformed_inputs_are_rejected(self):
+        with self.assertRaises(ValueError):
+            decision_quality([-1.0], [True, False], 0.0)
+        with self.assertRaises(ValueError):
+            decision_quality([-1.0], [True], None)
 
 
 if __name__ == "__main__":

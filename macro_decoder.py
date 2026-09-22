@@ -202,6 +202,49 @@ class MacroActionDecoder:
         }
 
 
+def decision_quality(evidence_diffs, jump_labels, margin: float) -> dict:
+    """Per-class decision quality at a *fixed* margin, without fitting one.
+
+    ``calibrate_jump_margin`` searches for the boundary that scores best on the
+    evidence it is handed. That is right for publishing a decoder and optimistic
+    when the same evidence is then used to report a score, so a held-out number has
+    to apply the margin fitted on the training shards here, untouched. Metric
+    definitions match ``calibrate_jump_margin`` exactly (a chunk is predicted as a
+    jump when ``evidence_diff > margin``) so the two are directly comparable.
+
+    Returns:
+        dict with the per-class recall and jump rate at ``margin``. A class that is
+        absent from the evidence reports ``None`` for its recall rather than a
+        number computed from a denominator of zero.
+    """
+    diffs = [float(d) for d in evidence_diffs]
+    labels = [bool(label) for label in jump_labels]
+    if len(diffs) != len(labels):
+        raise ValueError("evidence_diffs and jump_labels must have the same length")
+    if not isinstance(margin, (int, float)) or isinstance(margin, bool):
+        raise ValueError("margin must be a number")
+
+    margin = float(margin)
+    n_jump = sum(labels)
+    n_run = len(labels) - n_jump
+    predicted = [diff > margin for diff in diffs]
+    jump_recall = sum(p and l for p, l in zip(predicted, labels)) / n_jump if n_jump else None
+    run_recall = sum((not p) and (not l) for p, l in zip(predicted, labels)) / n_run if n_run else None
+    balanced = 0.5 * (jump_recall + run_recall) if jump_recall is not None and run_recall is not None else None
+
+    return {
+        "margin": margin,
+        "method": "fixed_margin",
+        "samples": len(diffs),
+        "jump_samples": n_jump,
+        "balanced_accuracy": round(balanced, 4) if balanced is not None else None,
+        "jump_recall": round(jump_recall, 4) if jump_recall is not None else None,
+        "run_recall": round(run_recall, 4) if run_recall is not None else None,
+        "jump_rate": round(sum(predicted) / len(predicted), 4) if predicted else None,
+        "target_jump_rate": round(n_jump / len(labels), 4) if labels else None,
+    }
+
+
 def calibrate_jump_margin(evidence_diffs, jump_labels, method: str = "balanced_accuracy") -> dict:
     """Pick ``jump_margin`` from labelled decision evidence instead of assuming zero.
 

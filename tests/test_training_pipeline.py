@@ -7,9 +7,10 @@ import numpy as np
 
 import torch
 
-from pretrain import save_checkpoint, target_rate_vector, pretrain_motor_layer
+from connectome import DrosophilaConnectomeSNN
+from pretrain import output_errors, save_checkpoint, target_rate_vector, pretrain_motor_layer
 from simulation import Simulation
-from trajectory import iter_dataset, write_shard
+from trajectory import iter_dataset, slice_dataset, write_shard
 
 
 class TestTrainingPipeline(unittest.TestCase):
@@ -142,6 +143,157 @@ class TestTrainingPipeline(unittest.TestCase):
             write_shard(tmpdir, frames, [1, 3, 1, 3], ram, [False] * 4, [False] * 4, {"level": "Level1-1"})
             with self.assertRaises(ValueError):
                 pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1, calibration_replays=0)
+
+
+class TestVisualPathwayPretraining(unittest.TestCase):
+    """Training the visual pathway, not only the motor readout.
+
+    The closed-loop ceiling was structural: pretraining moved ``layer3_4`` and nothing
+    else, so every DAgger round refit a linear probe on a frozen random connectome and
+    the features feeding the decision never changed. These tests pin that the new mode
+    is real (the visual layers move), that it is opt-in (frozen stays exactly at its
+    initialization), and that the two modes are measurably different.
+    """
+
+    SAMPLES = 12
+    ACTIONS = [1, 3, 1, 1, 3, 1, 3, 3, 1, 1, 3, 1]
+
+    def _vision_shard(self, dataset_dir, env_kind="stable-retro"):
+        """A shard whose frames carry real visual structure (not blank frames)."""
+        frames = [
+            np.random.RandomState(i).randint(0, 255, (64, 64, 3), dtype=np.uint8)
+            for i in range(self.SAMPLES)
+        ]
+        ram = [np.zeros(0x800, dtype=np.uint8) for _ in range(self.SAMPLES)]
+        write_shard(dataset_dir, frames, list(self.ACTIONS), ram,
+                    [False] * self.SAMPLES, [False] * self.SAMPLES, {"env_kind": env_kind})
+        return dataset_dir
+
+    def test_frozen_mode_leaves_the_visual_pathway_at_its_initialization(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._vision_shard(tmpdir)
+            torch.manual_seed(42)
+            reference = DrosophilaConnectomeSNN()
+
+            model, metadata = pretrain_motor_layer(
+                tmpdir, epochs=2, stride=1, settle_steps=2, seed=42
+            )
+
+            self.assertEqual(metadata["visual_pathway"], "frozen")
+            self.assertEqual(metadata["trained_layers"], ["layer3_4"])
+            self.assertIsNone(metadata["visual_learning_rate"])
+            for name in ("layer1_2", "layer2_3", "feedback_3_2"):
+                # Checked against a fresh model under the same seed, so this is the
+                # initialization heuristic rather than merely "small delta".
+                torch.testing.assert_close(
+                    getattr(model, name).weight, getattr(reference, name).weight
+                )
+                self.assertEqual(metadata["weight_deltas"][name]["l2_delta"], 0.0, name)
+            self.assertGreater(metadata["weight_deltas"]["layer3_4"]["l2_delta"], 0.0)
+
+    def test_visual_pathway_mode_trains_the_visual_layers_under_one_rule(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._vision_shard(tmpdir)
+
+            model, metadata = pretrain_motor_layer(
+                tmpdir, epochs=2, stride=1, settle_steps=2, seed=42,
+                visual_pathway="linear_feedback", visual_lr=0.005,
+            )
+
+            self.assertEqual(metadata["visual_pathway"], "linear_feedback")
+            self.assertEqual(metadata["visual_learning_rate"], 0.005)
+            self.assertEqual(
+                metadata["trained_layers"],
+                ["feedback_3_2", "layer1_2", "layer2_3", "layer3_4"],
+            )
+            for name in ("layer1_2", "layer2_3", "feedback_3_2"):
+                self.assertGreater(metadata["weight_deltas"][name]["relative"], 0.0, name)
+                weight = getattr(model, name).weight
+                self.assertTrue(bool(torch.isfinite(weight).all()), name)
+                # The readout's invariants hold for every trained layer.
+                self.assertLessEqual(float(weight.detach().abs().max()), 3.0, name)
+                self.assertLess(float(weight.detach().mean(dim=1).abs().max()), 1e-4, name)
+
+    def test_the_two_modes_reach_different_models(self):
+        """A flag that changed nothing would make the comparison meaningless."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._vision_shard(tmpdir)
+            frozen, _ = pretrain_motor_layer(tmpdir, epochs=1, stride=1, settle_steps=1, seed=42)
+            visual, _ = pretrain_motor_layer(
+                tmpdir, epochs=1, stride=1, settle_steps=1, seed=42,
+                visual_pathway="linear_feedback", visual_lr=0.005,
+            )
+            self.assertGreater(
+                float((frozen.layer1_2.weight - visual.layer1_2.weight).norm().detach()), 0.0
+            )
+            # The readout sees different features, so its own weights diverge too.
+            self.assertFalse(
+                torch.allclose(frozen.layer3_4.weight, visual.layer3_4.weight)
+            )
+
+    def test_credit_for_each_layer_is_chained_through_the_transposed_weights(self):
+        torch.manual_seed(7)
+        model = DrosophilaConnectomeSNN()
+        motor_error = torch.tensor([0.4, -0.2, 0.1, 0.3])
+
+        errors = output_errors(model, motor_error)
+
+        torch.testing.assert_close(errors["layer3_4"], motor_error)
+        central = model.layer3_4.weight.t().matmul(motor_error)
+        torch.testing.assert_close(errors["layer2_3"], central)
+        torch.testing.assert_close(errors["layer1_2"], model.layer2_3.weight.t().matmul(central))
+        # Both writers into the optic lobe read the error measured at that layer.
+        torch.testing.assert_close(errors["feedback_3_2"], errors["layer1_2"])
+        self.assertEqual(tuple(errors["layer1_2"].shape), (model.num_optic_lobe,))
+
+    def test_visual_pathway_configuration_is_validated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._vision_shard(tmpdir)
+            with self.assertRaises(ValueError):
+                pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1,
+                                     visual_pathway="surrogate_gradient")
+            with self.assertRaises(ValueError):
+                pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1,
+                                     visual_pathway="linear_feedback", visual_lr=0.0)
+
+    def test_held_out_reporting_applies_the_training_margin(self):
+        """One episode is one shard, so the held-out half is materialised first."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = os.path.join(tmpdir, "source")
+            train_dir = os.path.join(tmpdir, "train")
+            eval_dir = os.path.join(tmpdir, "eval")
+            self._vision_shard(source)
+            slice_dataset(source, train_dir, 0, 8)
+            slice_dataset(source, eval_dir, 8, self.SAMPLES)
+
+            _, metadata = pretrain_motor_layer(
+                train_dir, epochs=1, stride=1, settle_steps=1, seed=42,
+                report_dataset_dir=eval_dir,
+            )
+
+            training = metadata["decoder"]["calibration"]
+            held_out = metadata["held_out_decision_quality"]
+            self.assertEqual(training["method"], "balanced_accuracy")
+            self.assertEqual(held_out["method"], "fixed_margin")
+            self.assertEqual(held_out["margin"], training["margin"])
+            self.assertEqual(held_out["decisions_per_replay"], 4)
+            self.assertEqual(held_out["samples"], 4 * training["replays"])
+            self.assertEqual(held_out["env_kind"], "stable-retro")
+            self.assertTrue(held_out["dataset"]["checksums_verified"])
+
+    def test_a_held_out_dataset_from_another_environment_is_refused(self):
+        """A synthetic shard has the same schema, so only provenance can catch it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            train_dir = os.path.join(tmpdir, "train")
+            self._vision_shard(train_dir)
+            synthetic = os.path.join(tmpdir, "synthetic")
+            self._vision_shard(synthetic, env_kind="offline_synthetic")
+
+            with self.assertRaises(ValueError):
+                pretrain_motor_layer(
+                    train_dir, epochs=1, stride=1, settle_steps=1,
+                    report_dataset_dir=synthetic,
+                )
 
 
 if __name__ == "__main__":
