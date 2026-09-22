@@ -21,7 +21,7 @@ browser in real time.
 - **Deterministic Evaluation Harness** — isolated evaluation script (`eval_harness.py`) for benchmarking progress and actual Level 1-1 completions across episodes.
 - **Offline teacher pipeline** — `teacher.py` records a successful, checksummed Level 1-1 trajectory; `pretrain.py` applies supervised motor eligibility-trace updates before online STDP.
 - **Bounded macro-action decoder** — `macro_decoder.py` commits one RUN / RUN+JUMP chunk per action cadence (bounded by `MAX_CHUNK_FRAMES`), is held to completion, and is explicitly reset at every episode boundary, replacing unbounded frame-level jump decisions in the `macro` policy.
-- **Closed-loop DAgger (#30)** — `dagger.py` rolls out the candidate model-only, measures divergence against the teacher schedule, and mines labelled recovery windows; `closed_loop_dagger.py` chains rollouts → aggregated checksummed dataset → supervised pretraining → model-only evaluation on reserved seeds, with full provenance in the report. Each round's dataset directory is rebuilt from scratch, so re-running a round cannot inherit another dataset's shards, and the runner refuses a teacher shard collected in a different environment from the one under test.
+- **Closed-loop DAgger (#30)** — `dagger.py` rolls out the candidate model-only, measures divergence against the teacher schedule, and mines labelled recovery windows matched on the candidate's ground/airborne phase; `closed_loop_dagger.py` chains rollouts → aggregated checksummed dataset → supervised pretraining → model-only evaluation on reserved seeds, with full provenance in the report. Each round's dataset directory is rebuilt from scratch, so re-running a round cannot inherit another dataset's shards, the runner refuses a teacher shard collected in a different environment from the one under test, and `python dagger.py --teacher-dataset <dir>` audits the shard's labelling with no emulator or model.
 - **Offline plumbing validation** — `offline_env.py` is a deterministic synthetic stand-in (no `stable-retro` build needed) so the whole DAgger loop and its tests can run in CI; every result produced with it is labelled `offline_synthetic` and can never satisfy the P0 gate.
 - **Live web streaming dashboard** — MJPEG video feed + JSON stats endpoint via
   Flask, with the shared SNN core in `simulation.py`.
@@ -120,7 +120,7 @@ reached, in both CLI and web modes.
 | `trajectory.py`  | Versioned compressed trajectory shards, per-shard provenance and checksum validation |
 | `pretrain.py`   | Supervised motor eligibility-trace pretraining                    |
 | `macro_decoder.py` | Bounded RUN/JUMP macro-action chunk decoder (`macro` policy)     |
-| `dagger.py`      | Closed-loop DAgger rollouts, divergence detection and recovery windows |
+| `dagger.py`      | Closed-loop DAgger rollouts, divergence detection, phase-aware recovery windows, teacher-label audit CLI |
 | `closed_loop_dagger.py` | Issue #30 experiment runner: baseline + DAgger rounds + report |
 | `offline_env.py` | Deterministic synthetic env used to validate the loop without `stable-retro` |
 | `REACH_1_1_PLAN.md` | Issue triage and the reach-1-1 acceptance gate                 |
@@ -185,6 +185,69 @@ checkpoint, ROM and dataset-shard checksums, the git commit, seeds, horizon, set
 action cadence, per-shard origins and explicit `model_only` / `p0_gate_met` flags. A run
 that used bootstrap pulses, teacher actions or the synthetic environment can never report
 `p0_gate_met: true`.
+
+#### Teacher labelling: progress alone is not enough
+
+The teacher spends most of Level 1-1 airborne, and while it is airborne its recorded action
+is usually `run` — it is holding right mid-flight. Matching a candidate to the teacher by
+progress alone therefore teaches a *grounded* candidate to run wherever the teacher happened
+to fly overhead, which is exactly the state where running is fatal.
+
+Measured on the recorded ROM teacher shard (`python dagger.py --teacher-dataset data/teacher_rom`):
+
+| Quantity | Value |
+| --- | --- |
+| Teacher macro decisions | 99 (25 jump, 74 run) |
+| Run decisions taken mid-flight | **43** (58% of run decisions) |
+| Ground states mislabelled by progress-only matching | **1159 of 3244 (35.7%)** |
+| Direction of every disagreement | `run` → `jump` (1159 of 1159) |
+| Largest contiguous mislabelled stretch | x 399–503, recovered from the takeoff at x 362 |
+
+`TeacherLabeler` now matches on progress **and** phase: the target is the teacher's action
+recorded the last time the teacher was at (or before) that progress *in the same ground /
+airborne state*. The recovered target is the takeoff chunk that actually clears the obstacle
+— for the stall at x 594 that is the jump at x 549, not the mid-flight `run` the old rule
+returned. On top of that, a jump target is held for the remainder of the teacher chunk that
+produced it (bounded by the decoder's own `MAX_CHUNK_FRAMES`), so a flight in progress is
+never relabelled mid-air.
+
+Two properties keep this honest and checkable:
+
+* Phase matching **can only ever add jumps**, never remove one — a grounded candidate is only
+  upgraded to the jump the teacher itself used to clear that progress (asserted in the tests).
+* Divergence detection still uses the full position-only index, so fixing the labels cannot
+  silently change which states are flagged as diverged.
+
+```sh
+# Audit a teacher shard's labelling from the shard alone: no emulator, no model
+python dagger.py --teacher-dataset data/teacher_rom --sweep-step 1 --output runs/label-audit.json
+
+# Ablate the fix: identical rollouts, progress-only recovery targets
+python closed_loop_dagger.py --mode dagger --teacher-dataset data/teacher_rom \
+    --label-matching position_only
+```
+
+Every round's report records `teacher_labelling` (the audit above) and, per recovery window,
+which phase the target was matched in, which teacher chunk it came from, how many frames were
+served by the held commitment, and how many of the window's targets progress-only matching
+would have got wrong (`label_flips`).
+
+**Ablation on the real ROM** (identical seeds, cadence 15, settle 5, horizon 1600, 30 epochs,
+one episode per reserved seed). The rollout is model-only, so it visits the same 131 frames in
+both arms and dies in the same place; only the recovery window's supervision differs:
+
+| Arm | window target | window frames mislabelled | motor argmax acc | round-1 best_x | per-seed |
+| --- | --- | --- | --- | --- | --- |
+| `position_only` | `run` (chunk start x 287) | 0 | 0.647 | 1247 | 700 / 680 / 1247 |
+| `phase` (default) | `jump` (chunk start x 249) | **9 of 9** | 0.643 | 1246 | 700 / 680 / 1246 |
+
+**The fix corrects the supervision and does not move the number.** Every frame of the only
+window the round mined was being taught the wrong action, and the closed-loop result is
+unchanged (1246 vs 1247 — one pixel on one seed). Nine corrected training frames out of 1486
+cannot move a readout that sits at ~0.64 chunk accuracy, so this is a *correctness* fix, not the
+gate blocker. It is worth keeping for the reason the audit gives: the defect scales with how
+much of the level a policy survives (35.7% of ground states are affected), so it would silently
+compound in any run that got further than x 312.
 
 Offline validation of this loop (synthetic env, cadence 15, settle 3, seeds 42/43/44,
 400-step horizon, 2 epochs):
