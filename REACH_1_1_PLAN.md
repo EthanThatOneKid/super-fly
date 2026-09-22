@@ -47,18 +47,25 @@ that better calibration metrics can come with a worse closed-loop score:
 1. ~~Audit what the recovery windows are actually teaching.~~ Done: `python dagger.py --teacher-dataset data/teacher_rom` is now a standing pre-flight check, and its findings are recorded in every report as `teacher_labelling`.
 2. ~~Match recovery targets on phase rather than progress alone.~~ Done and ablated: see the two bullets above. It corrected all 9 frames of the mined window and changed round-1 best_x by 1 pixel, so the labelling rule is no longer a candidate explanation for the gate.
 3. Record the teacher shard on the target machine: `python teacher.py --output data/teacher` (the shard's provenance must match the environment under test; the runner now refuses a mismatch), then reproduce round 1: `python closed_loop_dagger.py --mode dagger --teacher-dataset data/teacher --save-path drosophila_snn.pth --iterations 1 --settle-steps 5 --epochs 30`.
-4. Then train something other than the fixed random readout — supervising the visual pathway (`layer1_2`/`layer2_3`) instead of `layer3_4` alone — and re-measure calibrated balanced accuracy at the chunk decisions before spending an emulator run on it.
-5. Only then sweep the cadence (`1, 4, 8, 15`) and recovery-window budgets (`0, 4, 8, 16`) at matched seeds, and use the jump-rate-matched calibration (`method="jump_rate"`) as a second arm, to see whether the residual spread is cadence, window count, or threshold placement.
+4. ~~Train something other than the fixed random readout — supervising the visual pathway (`layer1_2`/`layer2_3`) instead of `layer3_4` alone — and re-measure calibrated balanced accuracy at the chunk decisions before spending an emulator run on it.~~ Done: `--visual-pathway linear_feedback` trains `layer1_2`, `layer2_3` and `feedback_3_2` alongside the readout, and it does learn features (uncalibrated per-chunk argmax accuracy 0.548 -> 0.654 as its learning rate rises). The gating metric does **not** move: 0.522 / 0.531 / 0.540 at 5e-4 / 2e-3 / 1e-2, against 0.541 frozen and **0.521 for an untrained model**, all on the same teacher shard and seeds. No emulator run was spent. See "Training the visual pathway" in the README for the table.
+5. **Fix the measurement before the next arm.** The chunk-decision metric cannot gate anything as it stands: an untrained model scores 0.521, its companion metric never beats always-run (0.748), a single Poisson replay of the same frozen model reads `d` 0.62 where three pooled read 0.06 (replays are separate trajectories of a chaotic network, not resamples), and a faithful continuous replay is at chance too. Report per-replay decisions across several model seeds, and score jump-chunk recall at a bounded jump rate rather than threshold-optimal accuracy on ~100 decisions.
+6. Only then sweep the cadence (`1, 4, 8, 15`) and recovery-window budgets (`0, 4, 8, 16`) at matched seeds, and use the jump-rate-matched calibration (`method="jump_rate"`) as a second arm, to see whether the residual spread is cadence, window count, or threshold placement.
 
 **Ruled out so far, with measurements:** teacher-only pretraining (the policy leaves the
 corridor); decoder channel arithmetic and a hard-coded zero jump margin (fixed; 313 -> 1247);
-per-frame instead of per-cadence supervision (separation 0.24-0.29 vs 2.4-5.8); and
-progress-only recovery labelling (fixed; 1247 -> 1246, i.e. not the blocker). Every one of
-those was a real defect or a real design question, and none of them was the gate.
+per-frame instead of per-cadence supervision (separation 0.24-0.29 vs 2.4-5.8);
+progress-only recovery labelling (fixed; 1247 -> 1246, i.e. not the blocker); and training
+the visual pathway (0.531 vs 0.541 frozen and 0.521 untrained at the runner's own settings,
+plus a new evidence-saturation failure that collapses the decision to always-run). Every one
+of those was a real defect or a real design question, and none of them was the gate.
 
-Pre-screen every change with decision-point separation and calibrated balanced accuracy on
-the teacher shard; that measurement takes seconds and predicted the closed-loop jump from
-313 to 1247 without touching the emulator. Report completion rate, Wilson lower bound, best
+The measurement itself is now the binding constraint, not the architecture. Three of the
+numbers this plan has leaned on do not survive their own error bars: the "~0.66-0.70" readout
+ceiling is 0.541 at the epochs the runner actually uses (it needs 10-30 epochs), an untrained
+model scores the same as a trained one, and per-replay variance is as large as any arm
+difference measured so far. Pre-screening is still the right discipline — it takes seconds
+and caught the 313 -> 1247 decoder defect — but its output has to be a *paired, multi-seed,
+per-replay* comparison with a trivial baseline next to it, never a single calibrated number. Report completion rate, Wilson lower bound, best
 X, death rate, divergence-window counts and provenance (`model_only`, assistance flags, ROM
 and dataset checksums) for every arm. Do not treat bootstrap-assisted or synthetic-env
 numbers as learning evidence, and do not call a cadence change a learned policy.

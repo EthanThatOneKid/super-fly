@@ -288,12 +288,10 @@ improved (balanced accuracy 0.57 -> 0.66) while its closed-loop score fell, and 
 reserved seed it made zero jump decisions at all. The improvement is therefore not
 monotone and the report says so per seed.
 
-**Why the completion gate is still shut.** Pretraining only ever fits `layer3_4`, the
-readout over a fixed random connectome; the visual features feeding it never change. On
-the teacher's own chunk decisions that readout reaches a calibrated balanced accuracy of
-roughly 0.66-0.70. Level 1-1 is 100 macro decisions and a single fatal misjudgement at an
-obstacle ends the episode, so a per-decision error rate of ~30% cannot be chained into
-completion. Two things this run did establish:
+**Why the completion gate is still shut.** Pretraining fits `layer3_4`, the readout over a
+connectome whose visual layers are normally frozen, and level 1-1 is 100 macro decisions
+with a single fatal misjudgement at an obstacle ending the episode, so a per-decision error
+rate of ~30% cannot be chained into completion. Two things this run did establish:
 
 * The decision must be read off the two channels supervision trains (`RUN_ACTION` and
   `JUMP_ACTION`). The earlier aggregate counted the jump channel in *both* terms, which
@@ -307,6 +305,67 @@ completion. Two things this run did establish:
 Supervising every frame instead of one target per cadence chunk was tested and is worse
 (decision-point separation 0.24-0.29 versus 2.4-5.8), which is why stride is tied to the
 action cadence.
+
+### Training the visual pathway (issue #30, step 4)
+
+`pretrain.py --visual-pathway {frozen,linear_feedback}`. `frozen` (the default) fits only
+the `layer3_4` motor readout; `linear_feedback` also trains `layer1_2`, `layer2_3` and
+`feedback_3_2`, chaining the motor error back to each layer's *output* units through the
+transposed next-layer weights (`W_next.T @ e_next`). That is the linear part of backprop
+with no autograd and no surrogate derivative, it reduces exactly to the rule the readout
+already used, and it adds no state to the checkpoint. Trained layers keep the readout's
+invariants (rows re-centred, weights clamped to ±3), and `weight_deltas` records how far
+each layer actually moved, so a mode that leaves the pathway at its initialization is
+visible rather than assumed.
+
+**The measurement does not move.** Teacher shard, one decision per 15-frame chunk, 3 pooled
+Poisson replays, seeds 42/43/44:
+
+| arm | settle 3 | settle 5 | separation (`d`) |
+| --- | --- | --- | --- |
+| untrained (initialization heuristic) | 0.521 | 0.536 | -0.01 / 0.03 |
+| `frozen`, 3 epochs | 0.541 | 0.579 | 0.08 / 0.30 |
+| `linear_feedback` @5e-4 | 0.522 | – | – |
+| `linear_feedback` @2e-3 | 0.531 | 0.500 | 0.04 / -0.05 |
+| `linear_feedback` @1e-2 | 0.540 | – | – |
+
+The epochs-3 readout reaches 0.54-0.58, **not** the 0.66-0.70 quoted here earlier; that
+figure is reproducible only with more training (0.642 at 10 epochs, settle 10; 0.626-0.670
+at 30 epochs). Every arm above sits in the same 0.50-0.58 band as an **untrained** model, so
+the metric cannot currently tell learning from the initialization heuristic. Three more
+measurements agree:
+
+* The companion metric is worse than a trivial policy: `motor_argmax_accuracy` never beats
+  always choosing `run` (0.748) in any arm tested (0.53-0.67).
+* Pooling `replays` does not average out noise, because each replay is a separate trajectory
+  of a chaotic spiking network, not a resample of one. The same frozen model reads balanced
+  accuracy 0.64 / `d` 0.62 on a single replay and 0.51 / `d` 0.06 pooled over three.
+* Replaying all 1,477 frames and reading a decision at each cadence point, instead of
+  striding frames by the cadence so the SNN sees one frame in fifteen, also leaves every arm
+  at chance (`d` 0.03-0.07). The near-chance result is not a striding artefact.
+
+**What the visual pathway does do**, on the same shard: it raises the uncalibrated per-chunk
+argmax accuracy monotonically with its learning rate (0.548 frozen -> 0.600 / 0.632 / 0.654
+at 5e-4 / 2e-3 / 1e-2), so the features are genuinely being learned. It also adds a failure
+mode: the trained visual layers raise the readout's drive until the evidence counted over a
+settle window saturates at the window length (both chunk classes read exactly `-5.0` at
+settle 5, or `10.0` at settle 10) and the decision collapses to always-run. That is the
+zero-jump failure that cost the earlier round, and it happens on all three seeds at
+2e-3 / settle 5.
+
+**Conclusion: no emulator run for this arm yet.** The mechanism works, but the metric meant
+to gate the run reads the same for an untrained model, a trained readout and a visual-pathway
+model, so it can support no claim in either direction. Fixing the measurement comes first:
+report per-replay decisions across several model seeds, and require jump-chunk recall at a
+bounded jump rate instead of threshold-optimal accuracy on ~100 decisions.
+
+Reproduce the arm and its report (no emulator):
+
+```bash
+python pretrain.py --dataset data/teacher_rom --stride 15 --settle-steps 3 --seed 42 \
+  --visual-pathway linear_feedback --visual-lr 0.002 \
+  --report-dataset <held-out tail dataset> --output runs/visual_pathway/checkpoint.pth
+```
 
 `data/` (teacher shards) and `runs/` (reports, checkpoints, aggregated datasets) are
 regenerated artifacts and are not committed.
