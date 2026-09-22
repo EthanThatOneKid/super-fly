@@ -10,6 +10,7 @@ from ram_tracker import MarioRAMTracker
 from rom_importer import import_nes_rom
 from telemetry import DrosophilaTelemetryOverlay
 from storage import RunStorage
+from macro_decoder import DEFAULT_CHUNK_FRAMES, MAX_CHUNK_FRAMES, MacroActionDecoder
 
 DEFAULT_ROM_PATH = "roms/Super Mario Bros. (World).nes"
 DEFAULT_SAVE_PATH = "drosophila_snn.pth"
@@ -17,6 +18,14 @@ DEFAULT_LR = 0.005
 DEFAULT_MAX_STEPS = 2000
 MAX_SETTLE_STEPS = 10
 DEFAULT_SETTLE_STEPS = 3
+
+# Bounded action cadence for the macro-action decoder (frames per decision chunk).
+MAX_ACTION_CADENCE = MAX_CHUNK_FRAMES
+DEFAULT_ACTION_CADENCE = DEFAULT_CHUNK_FRAMES
+
+# Policies in which the SNN itself selects actions (as opposed to fixed controls).
+MODEL_POLICIES = ("agent", "macro")
+POLICIES = ("agent", "macro", "right_only", "bootstrap_only")
 
 # NES Action mapping: [NOOP, RIGHT+RUN, JUMP, RIGHT+RUN+JUMP]
 # NES retro action array (12 buttons): [B, Y, SELECT, START, UP, DOWN, LEFT, RIGHT, A, MODE, L, R]
@@ -72,7 +81,9 @@ class Simulation:
 
     def __init__(self, rom_path=DEFAULT_ROM_PATH, save_path=DEFAULT_SAVE_PATH, lr=DEFAULT_LR,
                  bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
-                 states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS):
+                 states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS,
+                 action_cadence=DEFAULT_ACTION_CADENCE, macro_jump_margin=0.0,
+                 macro_refractory_frames=0):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
@@ -80,13 +91,21 @@ class Simulation:
         self.max_bootstrap_step = max_bootstrap_step
         self.curriculum = curriculum
         self.seed = seed
-        if policy not in {"agent", "right_only", "bootstrap_only"}:
+        if policy not in POLICIES:
             raise ValueError(f"Unknown evaluation policy: {policy}")
         self.policy = policy
 
         if not (1 <= settle_steps <= MAX_SETTLE_STEPS):
             raise ValueError(f"settle_steps must be between 1 and {MAX_SETTLE_STEPS}")
         self.settle_steps = settle_steps
+
+        if not (1 <= action_cadence <= MAX_ACTION_CADENCE):
+            raise ValueError(f"action_cadence must be between 1 and {MAX_ACTION_CADENCE}")
+        self.action_cadence = action_cadence
+        self.macro_jump_margin = macro_jump_margin
+        self.macro_refractory_frames = macro_refractory_frames
+        self.macro_decoder = self._make_macro_decoder()
+        self.episode_state_resets = 0
 
         if states is None:
             self.states = ["Level1-1"]
@@ -172,6 +191,14 @@ class Simulation:
                     self.stdp.lr = self.lr
                 if "settle_steps" in p_cfg:
                     self.settle_steps = p_cfg["settle_steps"]
+                if "action_cadence" in p_cfg and p_cfg["action_cadence"] is not None:
+                    self.action_cadence = p_cfg["action_cadence"]
+                decoder_cfg = p_cfg.get("macro_decoder")
+                if isinstance(decoder_cfg, dict):
+                    self.macro_jump_margin = decoder_cfg.get("jump_margin", self.macro_jump_margin)
+                    self.macro_refractory_frames = decoder_cfg.get("refractory_frames", self.macro_refractory_frames)
+                if "action_cadence" in p_cfg or isinstance(decoder_cfg, dict):
+                    self.macro_decoder = self._make_macro_decoder()
                 if "seed" in p_cfg and p_cfg["seed"] is not None:
                     self.seed = p_cfg["seed"]
 
@@ -219,6 +246,15 @@ class Simulation:
         self.save_checkpoint(is_best=True)
         return True
 
+    def _make_macro_decoder(self) -> MacroActionDecoder:
+        """Build the bounded macro-action decoder bound to the active cadence."""
+        return MacroActionDecoder(
+            chunk_frames=self.action_cadence,
+            jump_chunk_frames=self.action_cadence,
+            jump_margin=self.macro_jump_margin,
+            refractory_frames=self.macro_refractory_frames,
+        )
+
     def get_effective_max_bootstrap_step(self, episode: int) -> int:
         """
         Calculate effective max bootstrap step limit based on multi-stage curriculum schedule:
@@ -263,9 +299,15 @@ class Simulation:
             env.unwrapped.load_state(target_state)
 
         obs, _ = env.reset()
+        # Explicit episode-boundary reset: sensory temporal state, recurrent SNN
+        # state (membrane potentials, spikes, pre/post eligibility traces, rate
+        # traces, recurrent feedback buffer), RAM reward history, jump timing and
+        # the bounded macro-action chunk state. Nothing may leak across episodes.
         self.preprocessor.reset()
         self.model.reset_state()
         self.ram_tracker.reset()
+        self.macro_decoder.reset()
+        self.episode_state_resets += 1
 
         self.current_step = 0
 
@@ -313,36 +355,54 @@ class Simulation:
                     m_spikes, layer_acts = self.model(spikes)
             accumulated_motor_spikes += m_spikes
 
-        # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
-        jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
         action_source = "right"
         execute_jump = False
         is_assisted = False
+        macro_decision = None
 
-        if self.refractory_counter > 0:
-            self.refractory_counter -= 1
+        if self.policy == "macro":
+            # Bounded macro-action decoding: one chunk decision per action cadence,
+            # always held to completion, replacing the unbounded frame-level jump
+            # decision used by the "agent" policy.
+            macro_decision = self.macro_decoder.step(accumulated_motor_spikes)
+            if macro_decision.macro == "jump":
+                execute_jump = True
+                action_source = "macro" if macro_decision.is_new_decision else "macro_hold"
+                if macro_decision.is_new_decision:
+                    self.model_jumps += 1
+            else:
+                action_source = "macro_run"
+                # A committed run chunk may still be overridden by the optional
+                # training-only bootstrap scaffolding; a committed model jump
+                # chunk is never interrupted.
+                bootstrap_source = self._next_bootstrap_jump_source()
+                if bootstrap_source is not None:
+                    execute_jump = True
+                    action_source = bootstrap_source
+                    is_assisted = True
+        else:
+            # Check model motor outputs (2: JUMP, 3: RIGHT+JUMP)
+            jump_requested = self.policy == "agent" and (accumulated_motor_spikes[2] > 0 or accumulated_motor_spikes[3] > 0)
 
-        if self.hold_jump_counter > 0:
-            self.hold_jump_counter -= 1
-            execute_jump = True
-            action_source = "model_hold"
-        elif jump_requested and self.refractory_counter == 0:
-            execute_jump = True
-            self.hold_jump_counter = 3  # Hold for 4 frames total (current frame + 3)
-            self.refractory_counter = 24  # 24-step refractory period
-            action_source = "model"
-            self.model_jumps += 1
-        elif self.bootstrap_pulse_counter > 0:
-            self.bootstrap_pulse_counter -= 1
-            execute_jump = True
-            action_source = "bootstrap_hold"
-            is_assisted = True
-        elif self.bootstrap_active and self.current_step >= 128 and (self.current_step - 128) % 84 == 0:
-            execute_jump = True
-            self.bootstrap_pulse_counter = 19  # 20 frames pulse total
-            action_source = "bootstrap"
-            self.assisted_jumps += 1
-            is_assisted = True
+            if self.refractory_counter > 0:
+                self.refractory_counter -= 1
+
+            if self.hold_jump_counter > 0:
+                self.hold_jump_counter -= 1
+                execute_jump = True
+                action_source = "model_hold"
+            elif jump_requested and self.refractory_counter == 0:
+                execute_jump = True
+                self.hold_jump_counter = 3  # Hold for 4 frames total (current frame + 3)
+                self.refractory_counter = 24  # 24-step refractory period
+                action_source = "model"
+                self.model_jumps += 1
+            else:
+                bootstrap_source = self._next_bootstrap_jump_source()
+                if bootstrap_source is not None:
+                    execute_jump = True
+                    action_source = bootstrap_source
+                    is_assisted = True
 
         action_idx = 3 if execute_jump else 1
         self.action_source = action_source
@@ -377,6 +437,11 @@ class Simulation:
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
             "settle_steps": self.settle_steps,
+            "action_cadence": self.action_cadence,
+            "macro": macro_decision.macro if macro_decision is not None else None,
+            "macro_chunk_remaining": macro_decision.frames_remaining if macro_decision is not None else 0,
+            "macro_decisions": self.macro_decoder.decisions,
+            "macro_jump_decisions": self.macro_decoder.jump_decisions,
             "died": died,
             "completed": completed,
         })
@@ -391,13 +456,34 @@ class Simulation:
             "telemetry_info": telemetry_info,
             "layer_acts": layer_acts,
             "terminated": terminated,
-            "terminated": terminated,
             "truncated": truncated,
             "action_source": self.action_source,
             "model_jumps": self.model_jumps,
             "assisted_jumps": self.assisted_jumps,
             "bootstrap_active": self.bootstrap_active,
             "policy": self.policy,
+            "settle_steps": self.settle_steps,
+            "action_cadence": self.action_cadence,
+            "macro": macro_decision.macro if macro_decision is not None else None,
+            "macro_chunk_remaining": macro_decision.frames_remaining if macro_decision is not None else 0,
+            "macro_decisions": self.macro_decoder.decisions,
+            "macro_jump_decisions": self.macro_decoder.jump_decisions,
             "died": died,
             "completed": completed,
         }
+
+    def _next_bootstrap_jump_source(self):
+        """Return the action source of the next training-only bootstrap jump pulse.
+
+        Bootstrap pulses are exploration scaffolding that must never be active during
+        model-only evaluation (``bootstrap_episodes=0``). Returns ``None`` when no
+        pulse applies to the current step.
+        """
+        if self.bootstrap_pulse_counter > 0:
+            self.bootstrap_pulse_counter -= 1
+            return "bootstrap_hold"
+        if self.bootstrap_active and self.current_step >= 128 and (self.current_step - 128) % 84 == 0:
+            self.bootstrap_pulse_counter = 19  # 20 frames pulse total
+            self.assisted_jumps += 1
+            return "bootstrap"
+        return None

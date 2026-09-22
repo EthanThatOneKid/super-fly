@@ -1,5 +1,4 @@
 import hashlib
-import fcntl
 from contextlib import contextmanager
 import json
 import os
@@ -16,6 +15,40 @@ SCHEMA_VERSION = "1.0"
 MAX_RUNS = 20
 MAX_STORAGE_BYTES = 100 * 1024 * 1024  # 100 MB
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "waiting", "expired"}
+
+try:  # POSIX advisory locking
+    import fcntl
+    _HAVE_FCNTL = True
+except ImportError:  # pragma: no cover - Windows has no fcntl module
+    fcntl = None
+    _HAVE_FCNTL = False
+
+try:  # Windows advisory locking fallback
+    import msvcrt
+    _HAVE_MSVCRT = True
+except ImportError:  # pragma: no cover - POSIX has no msvcrt module
+    msvcrt = None
+    _HAVE_MSVCRT = False
+
+
+def _lock_file_descriptor(handle) -> None:
+    """Acquire an exclusive advisory lock on an open lock file, cross-platform."""
+    if _HAVE_FCNTL:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    elif _HAVE_MSVCRT:  # pragma: no cover - exercised on Windows only
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+
+
+def _unlock_file_descriptor(handle) -> None:
+    """Release the advisory lock acquired by _lock_file_descriptor."""
+    if _HAVE_FCNTL:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    elif _HAVE_MSVCRT:  # pragma: no cover - exercised on Windows only
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
 
 
 def validate_path_component(value: str, name: str) -> str:
@@ -346,11 +379,17 @@ class RunStorage:
         lock_name = hashlib.sha256(idem_path.encode("utf-8")).hexdigest() + ".lock"
         lock_path = os.path.join(lock_dir, lock_name)
         lock_file = open(lock_path, "a+", encoding="utf-8")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            _lock_file_descriptor(lock_file)
+        except OSError:  # pragma: no cover - non-fatal if the platform refuses to lock
+            pass
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            try:
+                _unlock_file_descriptor(lock_file)
+            except OSError:  # pragma: no cover - lock already released by the OS
+                pass
             lock_file.close()
 
     def _wait_and_load_idempotent_event(self, idem_path: str) -> RunEvent:
@@ -453,8 +492,12 @@ class RunStorage:
             "policy": getattr(simulation, "policy", "agent"),
             "lr": getattr(simulation, "lr", 0.005),
             "settle_steps": getattr(simulation, "settle_steps", 3),
+            "action_cadence": getattr(simulation, "action_cadence", None),
             "seed": seed,
         }
+        macro_decoder = getattr(simulation, "macro_decoder", None)
+        if macro_decoder is not None:
+            policy_config["macro_decoder"] = macro_decoder.config()
 
         rng_states = {
             "python": random.getstate(),

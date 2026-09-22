@@ -1,7 +1,19 @@
 import os
 import sys
 import shutil
-import stable_retro
+
+
+def _stable_retro():
+    """Import stable-retro lazily so importing this module never requires the emulator.
+
+    The experiment and evaluation plumbing (macro decoding, DAgger datasets,
+    offline pipeline validation) must be importable on machines without the
+    stable-retro native build; only the calls that actually touch the emulator
+    pay the import cost.
+    """
+    import stable_retro
+    return stable_retro
+
 
 def import_nes_rom(rom_path: str, game_name: str = "SuperMarioBros-Nes") -> bool:
     """
@@ -11,6 +23,8 @@ def import_nes_rom(rom_path: str, game_name: str = "SuperMarioBros-Nes") -> bool
         raise FileNotFoundError(f"Specified ROM file not found at path: {rom_path}")
 
     print(f"Importing ROM file '{rom_path}' for stable-retro game '{game_name}'...")
+
+    stable_retro = _stable_retro()
 
     # Copy ROM file into retro's data path for game_name
     try:
