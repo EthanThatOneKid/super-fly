@@ -336,13 +336,15 @@ the metric cannot currently tell learning from the initialization heuristic. Thr
 measurements agree:
 
 * The companion metric is worse than a trivial policy: `motor_argmax_accuracy` never beats
-  always choosing `run` (0.748) in any arm tested (0.53-0.67).
+  always choosing `run` (0.748) in any arm tested, across every settle window and epoch
+  count measured (0.46-0.71).
 * Pooling `replays` does not average out noise, because each replay is a separate trajectory
   of a chaotic spiking network, not a resample of one. The same frozen model reads balanced
   accuracy 0.64 / `d` 0.62 on a single replay and 0.51 / `d` 0.06 pooled over three.
 * Replaying all 1,477 frames and reading a decision at each cadence point, instead of
-  striding frames by the cadence so the SNN sees one frame in fifteen, also leaves every arm
-  at chance (`d` 0.03-0.07). The near-chance result is not a striding artefact.
+  striding frames by the cadence so the SNN sees one frame in fifteen, also leaves all three
+  models at chance (balanced accuracy 0.51-0.53). The near-chance result is not a striding
+  artefact.
 
 **What the visual pathway does do**, on the same shard: it raises the uncalibrated per-chunk
 argmax accuracy monotonically with its learning rate (0.548 frozen -> 0.600 / 0.632 / 0.654
