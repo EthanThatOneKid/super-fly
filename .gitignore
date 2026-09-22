@@ -3,3 +3,4 @@ __pycache__/
 .pytest_cache/
 drosophila_snn.pth
 runs/
+data/

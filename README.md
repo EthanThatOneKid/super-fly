@@ -20,6 +20,9 @@ browser in real time.
 - **Autonomous Jump & Bootstrap Controller** — model-driven jump priority with 4-frame hold and 24-step refractory timing, plus periodic bootstrap pulses and STDP teaching trace injection for assisted jumps.
 - **Deterministic Evaluation Harness** — isolated evaluation script (`eval_harness.py`) for benchmarking progress and actual Level 1-1 completions across episodes.
 - **Offline teacher pipeline** — `teacher.py` records a successful, checksummed Level 1-1 trajectory; `pretrain.py` applies supervised motor eligibility-trace updates before online STDP.
+- **Bounded macro-action decoder** — `macro_decoder.py` commits one RUN / RUN+JUMP chunk per action cadence (bounded by `MAX_CHUNK_FRAMES`), is held to completion, and is explicitly reset at every episode boundary, replacing unbounded frame-level jump decisions in the `macro` policy.
+- **Closed-loop DAgger (#30)** — `dagger.py` rolls out the candidate model-only, measures divergence against the teacher schedule, and mines labelled recovery windows; `closed_loop_dagger.py` chains rollouts → aggregated checksummed dataset → supervised pretraining → model-only evaluation on reserved seeds, with full provenance in the report. Each round's dataset directory is rebuilt from scratch, so re-running a round cannot inherit another dataset's shards, and the runner refuses a teacher shard collected in a different environment from the one under test.
+- **Offline plumbing validation** — `offline_env.py` is a deterministic synthetic stand-in (no `stable-retro` build needed) so the whole DAgger loop and its tests can run in CI; every result produced with it is labelled `offline_synthetic` and can never satisfy the P0 gate.
 - **Live web streaming dashboard** — MJPEG video feed + JSON stats endpoint via
   Flask, with the shared SNN core in `simulation.py`.
 
@@ -114,8 +117,12 @@ reached, in both CLI and web modes.
 | `ram_tracker.py` | `MarioRAMTracker` — dopamine from SMB RAM (progress/death)           |
 | `eval_harness.py`| Isolated deterministic evaluation harness for SNN performance      |
 | `teacher.py`     | Deterministic Level 1-1 teacher trajectory collector              |
-| `trajectory.py`  | Versioned compressed trajectory shards and checksum validation    |
+| `trajectory.py`  | Versioned compressed trajectory shards, per-shard provenance and checksum validation |
 | `pretrain.py`   | Supervised motor eligibility-trace pretraining                    |
+| `macro_decoder.py` | Bounded RUN/JUMP macro-action chunk decoder (`macro` policy)     |
+| `dagger.py`      | Closed-loop DAgger rollouts, divergence detection and recovery windows |
+| `closed_loop_dagger.py` | Issue #30 experiment runner: baseline + DAgger rounds + report |
+| `offline_env.py` | Deterministic synthetic env used to validate the loop without `stable-retro` |
 | `REACH_1_1_PLAN.md` | Issue triage and the reach-1-1 acceptance gate                 |
 | `telemetry.py`   | `DrosophilaTelemetryOverlay` — layer heatmaps + dopamine gauges      |
 | `rom_importer.py`| Copies/imports a NES ROM into stable-retro's data dir               |
@@ -143,6 +150,103 @@ python eval_harness.py --save-path /tmp/super-fly-pretrained.pth --episodes 5 --
 ```
 
 The teacher trajectory is an upper-bound and data-generation tool, not evidence that the SNN has learned. The learned checkpoint must be evaluated with `completion_rate`; max X alone is not a Level 1-1 success.
+
+### Closed-loop DAgger (issue #30)
+
+The measured bottleneck is **closed-loop distribution shift**: the teacher trajectory reaches
+the flagpole, but a policy trained only on teacher frames leaves that narrow corridor and
+never returns to it. The fix is to train on the states the candidate actually visits.
+
+One DAgger round is: model-only on-policy rollouts → divergence / unrecoverable detection
+against the teacher schedule → labelled recovery windows → aggregated teacher + rollout
+dataset → supervised pretraining at the chunk cadence → model-only evaluation on the
+reserved seeds.
+
+```sh
+# Record the teacher shard, then run bounded DAgger rounds on the real ROM
+python teacher.py --output data/teacher
+python closed_loop_dagger.py --mode dagger --teacher-dataset data/teacher \
+    --save-path drosophila_snn.pth --iterations 3
+
+# Model-only baseline only
+python closed_loop_dagger.py --mode baseline --save-path drosophila_snn.pth
+
+# Validate the entire loop without the emulator (never gate-eligible)
+python closed_loop_dagger.py --mode dagger --offline-env --synthesize-teacher --iterations 2
+```
+
+The controller only ever sees visual spikes: a regression test replays identical frames into
+two identically seeded models, one of which only ever receives garbage RAM, and requires the
+same actions from both. RAM is read after the fact for reward, divergence measurement and
+provenance only.
+
+Every result is written to `runs/closed_loop_dagger/report.json` and `report.md` with
+checkpoint, ROM and dataset-shard checksums, the git commit, seeds, horizon, settle steps,
+action cadence, per-shard origins and explicit `model_only` / `p0_gate_met` flags. A run
+that used bootstrap pulses, teacher actions or the synthetic environment can never report
+`p0_gate_met: true`.
+
+Offline validation of this loop (synthetic env, cadence 15, settle 3, seeds 42/43/44,
+400-step horizon, 2 epochs):
+
+| round | best_x | mean best_x | death rate | model only | windows | dataset samples |
+| --- | --- | --- | --- | --- | --- | --- |
+| baseline | 635 | 528.3 | 1.00 | yes | – | – |
+| 1 | 815 | 755.0 | 0.33 | yes | 4 | 1683 |
+| 2 | 839 | 663.0 | 0.33 | yes | 31 | 1926 |
+
+These numbers validate plumbing only: the synthetic env is a caricature, no episode
+completed, and the results are explicitly excluded from the P0 gate. What they do show is
+that recovery windows are mined from genuine divergence (36 and 279 labelled samples),
+that the death rate drops from 1/1 to 1/3 episodes, and that the recorded provenance
+attributes every sample back to the teacher shard or to a specific rollout window.
+
+The improvement is not monotone, and the table should not be read as one: round 2 has the
+best single run (839) but a *worse* mean (663 vs 755), and one of the three reserved seeds
+still dies in both rounds. A real result needs more seeds, a longer horizon, and the ROM.
+
+### Real-ROM run (issue #30)
+
+Run inside a Linux container (`python:3.11-slim`, CPU torch, `stable-retro` manylinux
+wheel) against the committed ROM, cadence 15, settle 5, horizon 1600, one episode per
+reserved seed. The teacher plan completes Level 1-1 on this ROM in 1,477 frames
+(`max_x` 3243, no death), so the upper bound and the completion detector are both real:
+
+| arm | best_x | mean best_x | death rate | completion | jump decisions (per seed) |
+| --- | --- | --- | --- | --- | --- |
+| baseline (untrained, same harness) | 898 | 504.0 | 1.00 | 0.00 | 15 / 0 / 2 |
+| DAgger round 1 | **1247** | 875.7 | 1.00 | 0.00 | 15 / 14 / 17 |
+| reference (mainline temporal decoder, issue #30) | 594 | – | – | – | – |
+
+Round 1 clears the reference by 2.1x and its own untrained baseline by 1.4x, model-only.
+It does **not** complete the level, so `p0_gate_met` stays `false`. A second round
+continued from round 1's checkpoint *regressed* (1247 -> 899): its calibration metrics
+improved (balanced accuracy 0.57 -> 0.66) while its closed-loop score fell, and on one
+reserved seed it made zero jump decisions at all. The improvement is therefore not
+monotone and the report says so per seed.
+
+**Why the completion gate is still shut.** Pretraining only ever fits `layer3_4`, the
+readout over a fixed random connectome; the visual features feeding it never change. On
+the teacher's own chunk decisions that readout reaches a calibrated balanced accuracy of
+roughly 0.66-0.70. Level 1-1 is 100 macro decisions and a single fatal misjudgement at an
+obstacle ends the episode, so a per-decision error rate of ~30% cannot be chained into
+completion. Two things this run did establish:
+
+* The decision must be read off the two channels supervision trains (`RUN_ACTION` and
+  `JUMP_ACTION`). The earlier aggregate counted the jump channel in *both* terms, which
+  cancels it, so a learned jump request read as a tie and the controller never jumped:
+  zero jump decisions and death at the first obstacle.
+* The jump margin has to be **calibrated**, not fixed at zero. The trained evidence is
+  offset -- on the teacher's own chunks the mean jump-minus-run evidence is negative for run
+  chunks *and* for jump chunks -- so a zero threshold reads as "never jump" however well the
+  classes separate. Calibration lifted closed-loop `best_x` from 313 to 1247.
+
+Supervising every frame instead of one target per cadence chunk was tested and is worse
+(decision-point separation 0.24-0.29 versus 2.4-5.8), which is why stride is tied to the
+action cadence.
+
+`data/` (teacher shards) and `runs/` (reports, checkpoints, aggregated datasets) are
+regenerated artifacts and are not committed.
 
 ## How it works
 
