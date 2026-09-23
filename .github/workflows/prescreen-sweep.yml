@@ -1,0 +1,343 @@
+# Pre-screen sweep
+#
+# Runs a set of emulator-free pre-screen cells in parallel -- one job per cell -- and merges
+# their tables into one comparison, so a sweep that used to be a serial afternoon is one
+# dispatch and one download.
+#
+# What a cell is: a pre-screen run that differs from the others in exactly one thing, the
+# statistic (`--evidence-rule`), the window (`--settle-steps`), or the seed set. The jobs are
+# independent, which is what makes them a matrix, and they are CPU-bound forward passes, which
+# is what makes a GitHub-hosted runner an adequate place to run them.
+#
+# What it needs to find on the runner: the teacher shard, and the checkpoints a cell names.
+# The shard is *generated*, not shipped: it is a deterministic function of the ROM, which is
+# tracked, so a cell whose dataset path is empty regenerates it with the emulator first. The
+# checkpoints are the only thing a runner has to be given; a dispatch with none runs the
+# untrained baseline alone, which is a legitimate probe of everything except checkpoint loading.
+# The pre-screen path itself imports without `stable_retro`, so the emulator is installed only
+# when a shard has to be regenerated.
+#
+# `reference` turns the sweep into a gate: point it at a table (or a directory of tables) that
+# holds the numbers a claim was published on, and the run fails when a metric moves further than
+# `tolerance`. Whether a cloud runner reproduces a local reading exactly is the first thing worth
+# knowing, so the first dispatch worth making is a reference of an existing table with
+# `tolerance` at 0 -- a clean result licenses every later cross-host number, and a dirty one is
+# itself the finding.
+#
+# The ROM is never touched here: it is needed only to *generate* a teacher shard and to run the
+# emulator, and this workflow does neither.
+
+name: Pre-screen sweep
+
+on:
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: >-
+          JSON array of sweep cells. Each element is an object with an `id` (required, used as
+          the artifact name) and any of `rule`, `decay`, `settle_steps`, `stride`, `replays`,
+          `seeds`. Example: [{"id":"spike","rule":"spike_sum"},{"id":"drive","rule":"drive_sum"},
+          {"id":"settle10","rule":"spike_sum","settle_steps":10}]
+        required: true
+        type: string
+      checkpoints:
+        description: 'Space-separated NAME=PATH candidate checkpoints'
+        required: false
+        type: string
+        default: >-
+          round1=runs/closed_loop_dagger/iter-01/checkpoint.pth
+          round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth
+          feedback=runs/prescreen/feedback.pth
+      dataset:
+        description: 'Teacher shard directory on the runner; regenerated from `rom` if absent'
+        required: false
+        type: string
+        default: data/teacher_rom
+      rom:
+        description: 'ROM to regenerate the teacher shard from when `dataset` is absent'
+        required: false
+        type: string
+        default: roms/Super Mario Bros. (World).nes
+      settle_steps:
+        description: 'Default settle window for a cell that does not override it'
+        required: false
+        type: string
+        default: '5'
+      stride:
+        description: 'Default action cadence for a cell that does not override it'
+        required: false
+        type: string
+        default: '15'
+      replays:
+        description: 'Default number of dev-seed replays for a cell that does not override it'
+        required: false
+        type: string
+        default: '5'
+      seeds:
+        description: 'Comma-separated dev seeds; empty spends the module default. The reserved gate seeds are refused by the tool.'
+        required: false
+        type: string
+        default: ''
+      reference:
+        description: >-
+          Table or directory of tables to gate the sweep against. Supplying one makes the run
+          strict: a metric moving further than `tolerance` fails the run, and so does a sweep
+          that shares no row with the reference at all (nothing was compared, so nothing was
+          checked). Empty only reports.
+        required: false
+        type: string
+        default: ''
+      tolerance:
+        description: 'How far a float metric may move before it counts as drift (0 demands an exact reproduction)'
+        required: false
+        type: string
+        default: '0.01'
+      max_parallel:
+        description: 'How many cells may run at once'
+        required: false
+        type: string
+        default: '4'
+      runner_labels:
+        description: 'One runner label for the cells; a self-hosted runner can also see locally held data. A multi-label runner needs the array form in this file rather than this input.'
+        required: false
+        type: string
+        default: ubuntu-latest
+
+concurrency:
+  # Serialize sweeps on a branch rather than cancelling them: a pre-screen cell that takes forty
+  # minutes and is thrown away at minute thirty-nine is the waste this workflow exists to remove.
+  group: prescreen-sweep-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  sweep:
+    name: cell ${{ matrix.id }}
+    runs-on: ${{ inputs.runner_labels }}
+    timeout-minutes: 120
+    strategy:
+      # Every cell reports, not just the first failure: the comparison table is the product, and
+      # one cell failing is a row of it rather than the end of the sweep.
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.max_parallel) }}
+      matrix:
+        include: ${{ fromJSON(inputs.cells) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before the install, not after it: a cell whose data is not on the runner has nothing to
+      # say, and finding that out after several minutes of pip is the kind of wait this workflow
+      # exists to remove.
+      - name: Preflight the data this cell needs
+        id: preflight
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+          CHECKPOINTS: ${{ inputs.checkpoints }}
+          ROM: ${{ inputs.rom }}
+        run: |
+          missing=0
+          check() {
+            if [ ! -e "$1" ]; then
+              echo "::error::missing $1 -- see this workflow's header for what a cell needs."
+              missing=1
+            fi
+          }
+          # A cell with no checkpoint runs the untrained baseline only -- which is a legitimate
+          # and cheap probe of the whole rest of the pipeline, so it is said out loud rather
+          # than passed over.
+          if [ -z "$CHECKPOINTS" ]; then
+            echo "no checkpoints given: every cell runs the untrained baseline only"
+          fi
+          for spec in $CHECKPOINTS; do
+            # NAME=PATH, so the path is what has to exist.
+            check "${spec#*=}"
+          done
+          if [ -e "$DATASET" ]; then
+            echo "teacher shard present at $DATASET"
+            echo "regenerate=false" >> "$GITHUB_OUTPUT"
+          else
+            # The shard is a deterministic function of the ROM, which is tracked, so a runner
+            # that has the emulator can make its own rather than being sent one.
+            echo "teacher shard absent: it will be regenerated from $ROM"
+            check "$ROM"
+            echo "regenerate=true" >> "$GITHUB_OUTPUT"
+          fi
+          exit $missing
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # torch's default manylinux wheel pulls several GB of CUDA libraries a CPU-only sweep
+      # never touches, and the emulator is not needed at all, so it is installed from the CPU
+      # index and `stable-retro` is left out of the core install.
+      - name: Install CPU-only torch
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install core dependencies
+        shell: bash
+        run: |
+          python - <<'PY' > core-requirements.txt
+          import pathlib
+
+          kept = [
+              line.strip()
+              for line in pathlib.Path("requirements.txt").read_text(encoding="utf-8-sig").splitlines()
+              if line.strip()
+              and not line.lstrip().startswith("#")
+              and "stable-retro" not in line
+          ]
+          print("\n".join(kept))
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install -r core-requirements.txt
+
+      - name: Install the emulator
+        # Only to regenerate the shard: the pre-screen path itself never imports it.
+        if: steps.preflight.outputs.regenerate == 'true'
+        shell: bash
+        run: |
+          python -m pip install --only-binary=:all: "stable-retro>=0.1.0"
+
+      - name: Regenerate the teacher shard from the tracked ROM
+        if: steps.preflight.outputs.regenerate == 'true'
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+          ROM: ${{ inputs.rom }}
+        run: python -u teacher.py --rom "$ROM" --output "$DATASET"
+
+      - name: Report the shard this cell will run on
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+        run: |
+          # Printed before the run, so a comparison that ends up addressing nothing (see
+          # sweep.py's `unaddressed`) can be diagnosed from the same log.
+          python - <<'PY'
+          import os
+
+          from trajectory import dataset_provenance
+
+          provenance = dataset_provenance(os.environ["DATASET"])
+          for shard in provenance.get("shards", []):
+              print(f"  {shard.get('path')}: {shard.get('samples')} samples, sha256 {shard.get('sha256')}")
+          PY
+
+      - name: Run the cell
+        shell: bash
+        env:
+          CELL_ID: ${{ matrix.id }}
+          RULE: ${{ matrix.rule }}
+          DECAY: ${{ matrix.decay }}
+          SETTLE: ${{ matrix.settle_steps || inputs.settle_steps }}
+          STRIDE: ${{ matrix.stride || inputs.stride }}
+          REPLAYS: ${{ matrix.replays || inputs.replays }}
+          SEEDS: ${{ matrix.seeds || inputs.seeds }}
+          DATASET: ${{ inputs.dataset }}
+          CHECKPOINTS: ${{ inputs.checkpoints }}
+        run: |
+          args=(--dataset "$DATASET" --stride "$STRIDE" --settle-steps "$SETTLE" --replays "$REPLAYS")
+          if [ -n "$RULE" ]; then args+=(--evidence-rule "$RULE"); fi
+          if [ -n "$DECAY" ]; then args+=(--evidence-decay "$DECAY"); fi
+          if [ -n "$SEEDS" ]; then args+=(--seeds "$SEEDS"); fi
+          for spec in $CHECKPOINTS; do args+=(--checkpoint "$spec"); done
+          mkdir -p runs/prescreen
+          echo "prescreen.py ${args[*]}"
+          python -u prescreen.py "${args[@]}" 2>&1 | tee "runs/prescreen/$CELL_ID.log"
+
+      - name: Upload this cell's table
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prescreen-${{ matrix.id }}
+          path: |
+            runs/prescreen/${{ matrix.id }}.json
+            runs/prescreen/${{ matrix.id }}.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  aggregate:
+    name: merge and check
+    needs: sweep
+    # The comparison is the product even when a cell failed, and a failed cell is one of the
+    # things the comparison has to say out loud.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Collect the cell tables
+        uses: actions/download-artifact@v4
+        with:
+          pattern: prescreen-*
+          merge-multiple: true
+          path: tables
+
+      - name: Name the cells that delivered nothing
+        shell: bash
+        env:
+          CELLS: ${{ inputs.cells }}
+        run: |
+          echo "$CELLS" > cells.json
+          for id in $(python -c 'import json;print(" ".join(cell["id"] for cell in json.load(open("cells.json"))))'); do
+            if [ ! -f "tables/$id.json" ]; then
+              echo "::warning::cell $id produced no table"
+            fi
+          done
+
+      - name: Merge the sweep and check it against the reference
+        id: sweep
+        shell: bash
+        env:
+          REFERENCE: ${{ inputs.reference }}
+          TOLERANCE: ${{ inputs.tolerance }}
+        run: |
+          shopt -s nullglob
+          tables=(tables/*.json)
+          if [ ${#tables[@]} -eq 0 ]; then
+            echo "::error::no cell produced a table, so there is nothing to compare"
+            exit 1
+          fi
+          args=(--tables "${tables[@]}" --tolerance "$TOLERANCE" --output tables/sweep.json)
+          if [ -n "$REFERENCE" ]; then args+=(--reference "$REFERENCE"); fi
+          # The exit status is the gate's answer, and the report is written either way, so the
+          # status is carried out of the step rather than ending it here.
+          set +e
+          python sweep.py "${args[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the merged sweep
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prescreen-sweep
+          path: tables/sweep.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail the run when published numbers moved
+        if: always() && steps.sweep.outputs.status != '' && steps.sweep.outputs.status != '0'
+        shell: bash
+        run: |
+          echo "::error::the sweep drifted from ${{ inputs.reference }} beyond tolerance ${{ inputs.tolerance }}; the job summary lists which numbers moved."
+          exit 1
