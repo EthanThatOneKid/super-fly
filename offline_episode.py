@@ -62,6 +62,7 @@ import torch
 
 from connectome import DrosophilaConnectomeSNN
 from dagger import is_airborne_from_ram
+from evidence import evidence_config, rule_from_config
 from macro_decoder import MacroActionDecoder
 from ram_tracker import LEVEL_END_MIN_X, MarioRAMTracker
 from seed_policy import SeedSet, resolve_seeds
@@ -148,6 +149,8 @@ def macro_decoder(cadence: int, config: Optional[Dict[str, object]] = None) -> M
         jump_chunk_frames=int(jump_chunk_frames) if jump_chunk_frames else chunk_frames,
         jump_margin=float(config.get("jump_margin", 0.0)),
         refractory_frames=int(config.get("refractory_frames") or 0),
+        evidence_rule=config.get("evidence_rule"),
+        evidence_decay=config.get("evidence_decay"),
     )
 
 
@@ -237,13 +240,15 @@ def replay_sequence(model: DrosophilaConnectomeSNN, shards: Sequence[dict],
             frames = shard["frames"]
             for index in range(len(frames)):
                 features, _ = pre.process_frame(frames[index])
-                accumulated_motor = torch.zeros(model.num_motor_ganglion)
+                # The decoder's own evidence rule, so an arm is replayed with the statistic it
+                # will run under rather than with a reconstruction of it.
+                evidence = decoder.new_evidence()
                 for _ in range(settle_steps):
                     spikes = pre.generate_poisson_spikes(features)
-                    motor_spikes, _ = model(spikes)
-                    accumulated_motor += motor_spikes
+                    motor_spikes, activations = model(spikes)
+                    evidence.observe(motor_spikes, activations, model)
 
-                decision = decoder.step(accumulated_motor)
+                decision = decoder.step(evidence.channels())
                 if decision.is_new_decision:
                     decisions.append({
                         "index": len(decisions),
@@ -328,6 +333,9 @@ def sequence_report(name: str, model: DrosophilaConnectomeSNN, shards: Sequence[
         "cadence": cadence,
         "settle_steps": settle_steps,
         "decoder": dict(decoder_config or {}),
+        # Which statistic the margin was applied to, stated outright: the two numbers are
+        # only interpretable together, and the replay above ran exactly this rule.
+        "evidence": evidence_config(*rule_from_config(decoder_config)),
         "per_replay": per_replay,
         # Headline progress measure: the teacher's jumps, taken in sequence.
         "jump_sequence_recall": _spread([row["jump_sequence_recall"] for row in per_replay]),

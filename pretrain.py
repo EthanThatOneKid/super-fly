@@ -8,6 +8,8 @@ import numpy as np
 import torch
 
 from connectome import DrosophilaConnectomeSNN
+from evidence import DEFAULT_RULE as DEFAULT_EVIDENCE_RULE
+from evidence import evidence_config
 from macro_decoder import MAX_CHUNK_FRAMES
 from offline_episode import sequence_report
 from prescreen import (
@@ -155,7 +157,9 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                          visual_pathway: str = "frozen",
                          visual_lr: float | None = None,
                          report_dataset_dir: str | None = None,
-                         eval_seeds: Optional[Sequence[int]] = None) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
+                         eval_seeds: Optional[Sequence[int]] = None,
+                         evidence_rule: str | None = None,
+                         evidence_decay: float | None = None) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
     """Supervised pretraining over trajectory shards.
 
     ``stride`` is the action cadence: one supervised target per cadence frames,
@@ -178,6 +182,10 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     ``eval_seeds`` the arm is then calibrated and pre-screened on. Those default to the dev
     range and may not be the reserved gate set: fitting the jump margin on the seeds the
     published claim is reported on would leak the claim back into the thing being claimed.
+
+    ``evidence_rule`` selects the statistic the calibrated margin thresholds (see
+    :mod:`evidence`). It is calibrated *under that rule* and written into the checkpoint
+    beside it, because a margin in spike counts means nothing applied to a drive statistic.
     """
     if epochs <= 0 or lr <= 0 or stride <= 0:
         raise ValueError("epochs, lr, and stride must be positive")
@@ -268,7 +276,8 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     # one noisy draw. The same replays then feed the pre-screen, so the arm is measured
     # on exactly the evidence its margin was chosen from -- which is why both run on the
     # *dev* seeds: it is a fitted number, and the reserved set is report-only.
-    replays = collect_replays(model, shards, stride, settle_steps, eval_seed_set)
+    rule_config = evidence_config(evidence_rule, evidence_decay)
+    replays = collect_replays(model, shards, stride, settle_steps, eval_seed_set, rule_config)
     calibration = calibration_record(replays)
     decoder_config = {
         "decoder": "bounded_macro_action",
@@ -278,6 +287,9 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         "refractory_frames": 0,
         "max_chunk_frames": MAX_CHUNK_FRAMES,
         "calibration": calibration,
+        # The statistic the margin above belongs to. Recorded beside it so the closed loop
+        # cannot apply one rule's threshold to another rule's evidence.
+        **rule_config,
     }
 
     dataset_info = dataset_provenance(dataset_dir)
@@ -403,7 +415,8 @@ def save_checkpoint(model: DrosophilaConnectomeSNN, path: str, metadata: Dict[st
         policy_config["macro_decoder"] = {
             key: decoder_config[key]
             for key in ("decoder", "chunk_frames", "jump_chunk_frames", "jump_margin",
-                        "refractory_frames", "max_chunk_frames", "calibration")
+                        "refractory_frames", "max_chunk_frames", "calibration",
+                        "evidence_rule", "evidence_decay")
             if key in decoder_config
         }
     torch.save({
@@ -436,6 +449,11 @@ def main() -> None:
                         help="Learning rate for the visual pathway (defaults to --lr)")
     parser.add_argument("--report-dataset", default=None,
                         help="Held-out dataset to pre-screen at the training margin")
+    parser.add_argument("--evidence-rule", default=None,
+                        help=f"Statistic the calibrated margin thresholds (default "
+                             f"{DEFAULT_EVIDENCE_RULE}); 'spike_sum' is the rule that shipped")
+    parser.add_argument("--evidence-decay", type=float, default=None,
+                        help="Recency decay for a leaky evidence rule")
     args = parser.parse_args()
     model, metadata = pretrain_motor_layer(
         args.dataset, args.epochs, args.lr, args.stride, args.settle_steps, args.seed,
@@ -443,6 +461,7 @@ def main() -> None:
         visual_pathway=args.visual_pathway, visual_lr=args.visual_lr,
         report_dataset_dir=args.report_dataset,
         eval_seeds=parse_seeds(args.eval_seeds) if args.eval_seeds else None,
+        evidence_rule=args.evidence_rule, evidence_decay=args.evidence_decay,
     )
     save_checkpoint(model, args.output, metadata)
     calibration = metadata["decoder"]["calibration"]
@@ -475,6 +494,7 @@ def main() -> None:
             "untrained_recall": baseline["budget"]["jump_recall"]["mean"],
         },
         "shipping_margin": calibration["margin"],
+        "evidence_rule": metadata["decoder"]["evidence_rule"],
         "shipping_margin_quality": {
             key: candidate["budget"]["at_margin"][key]
             for key in ("jump_recall", "jump_rate", "balanced_accuracy")

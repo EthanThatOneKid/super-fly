@@ -48,6 +48,17 @@ import numpy as np
 import torch
 
 from connectome import DrosophilaConnectomeSNN
+from evidence import (
+    DEFAULT_DECAY,
+    DEFAULT_RULE,
+    RULES,
+    SHIPPED_RULE,
+    MotorEvidence,
+    evidence_config,
+    rule_from_config,
+    validate_decay,
+    validate_rule,
+)
 from macro_decoder import JUMP_ACTION, RUN_ACTION, calibrate_jump_margin, decision_quality
 from offline_episode import sequence_report, teacher_traces
 from seed_policy import (
@@ -211,7 +222,8 @@ def recall_at_bounded_rate(evidence_diffs: Sequence[float], jump_labels: Sequenc
 
 
 def collect_replays(model: DrosophilaConnectomeSNN, shards: Sequence[dict], stride: int,
-                    settle_steps: int, seeds) -> List[Dict[str, object]]:
+                    settle_steps: int, seeds,
+                    evidence_rules: Optional[Dict[str, object]] = None) -> List[Dict[str, object]]:
     """One evidence row per replay, keyed by replay seed.
 
     The replay seed is the pairing key: ``decision_evidence`` reseeds both RNGs from it
@@ -228,7 +240,8 @@ def collect_replays(model: DrosophilaConnectomeSNN, shards: Sequence[dict], stri
     preprocessor = vision_preprocessor()
     rows = []
     for replay_seed in resolved.seeds:
-        diffs, labels = decision_evidence(model, preprocessor, shards, stride, settle_steps, replay_seed)
+        diffs, labels = decision_evidence(model, preprocessor, shards, stride, settle_steps,
+                                          replay_seed, evidence_rules)
         rows.append({"replay_seed": replay_seed, "diffs": diffs, "labels": labels})
     return rows
 
@@ -324,16 +337,105 @@ def summarise_arm(name: str, replays: Sequence[Dict[str, object]],
     return report
 
 
+def prepare_arm(arm: Arm, shards: Sequence[dict], stride: int, settle_steps: int,
+                seeds: SeedSet, rule_override: Optional[str] = None,
+                decay_override: Optional[float] = None) -> Dict[str, object]:
+    """The arm's replays, the decoder it will actually run, and where its margin came from.
+
+    A margin is fitted *for a statistic*. ``jump_margin`` on a spike sum is measured in spike
+    counts and on the analog drive in drive units, so a checkpoint whose margin was fitted for a
+    different statistic has a threshold whose units do not apply. Rather than apply it anyway --
+    which is how a decoder silently becomes "never jump" -- the arm's rule is adopted
+    explicitly, and a margin is re-fitted for it on the same teacher chunks, with the old value
+    and the calibration that replaced it both recorded.
+
+    A checkpoint that declares *no* rule is one from before the rule travelled in a checkpoint,
+    and the only statistic that existed then is :data:`SHIPPED_RULE`. When that is the rule being
+    measured, the arm's own margin is applied rather than re-fitted, so the measurement is the
+    shipped decoder and not a re-calibration of it; the provenance says the rule was inferred.
+
+    The re-fit is a fitted number, so it happens on the dev seeds like every other calibrated
+    quantity here; the reserved set stays report-only.
+    """
+    declared_rule = (arm.decoder or {}).get("evidence_rule")
+    if rule_override is None:
+        rule, decay = rule_from_config(arm.decoder)
+    else:
+        # A caller may force one statistic across every arm, which is how the *statistic* is
+        # isolated from the threshold protocol: the arm still gets a margin fitted for the
+        # rule it is being measured under.
+        rule = validate_rule(rule_override)
+        decay = validate_decay(DEFAULT_DECAY if decay_override is None else decay_override)
+    config = {**dict(arm.decoder or {}), **evidence_config(rule, decay)}
+    # The chunk-decision rows are read under the rule being measured, not the one the arm
+    # happens to carry -- otherwise an override would calibrate on one statistic and replay
+    # another.
+    rows = collect_replays(arm.model, shards, stride, settle_steps, seeds, config)
+    # A checkpoint that declares no rule predates the rule travelling in one, and the only
+    # statistic that existed then is ``SHIPPED_RULE`` -- which is therefore what its margin was
+    # fitted for, reported as inferred rather than declared. Any other rule needs a margin fitted
+    # for it.
+    inferred_legacy = declared_rule is None
+    shipped_rule = SHIPPED_RULE if inferred_legacy else declared_rule
+    # ``Arm.margin`` is the threshold the arm ships -- read from the checkpoint, or passed in
+    # explicitly -- and it wins over the copy inside the decoder dict, which is where it came
+    # from in the first place.
+    shipped_margin = arm.margin if arm.margin is not None else (arm.decoder or {}).get("jump_margin")
+    if str(shipped_rule) == rule and shipped_margin is not None:
+        config["jump_margin"] = float(shipped_margin)
+        margin_source = {
+            "source": "checkpoint",
+            "rule": rule,
+            "margin": float(shipped_margin),
+            "shipped_rule": shipped_rule,
+            "declared_rule": declared_rule,
+            "rule_inferred": inferred_legacy,
+            "override": rule_override,
+            "note": ("the checkpoint declares no evidence rule and shipped the spike sum, which "
+                     "is the rule being measured, so its own margin applies"
+                     if inferred_legacy else
+                     "the arm ships a margin fitted for this evidence rule"),
+        }
+    else:
+        calibration = calibration_record(rows)
+        config["jump_margin"] = calibration["margin"]
+        config["calibration"] = calibration
+        margin_source = {
+            "source": "recalibrated_for_evidence_rule",
+            "rule": rule,
+            "margin": calibration["margin"],
+            "shipped_rule": shipped_rule,
+            "shipped_margin": shipped_margin,
+            "declared_rule": declared_rule,
+            "override": rule_override,
+            "calibration": calibration,
+            "note": ("the arm's threshold was not fitted for this evidence rule, so its units do "
+                     "not apply and the margin was re-fitted on the same teacher chunks, "
+                     "recording both values"),
+        }
+    return {"replays": rows, "decoder": config, "margin_source": margin_source}
+
+
 def arm_report(arm: Arm, dataset, stride: int, settle_steps: int, seeds,
-               max_jump_rate: float = DEFAULT_MAX_JUMP_RATE) -> Dict[str, object]:
-    """Collect and summarise one arm against ``dataset`` (a directory or loaded shards)."""
+               max_jump_rate: float = DEFAULT_MAX_JUMP_RATE,
+               prepared: Optional[Dict[str, object]] = None) -> Dict[str, object]:
+    """Collect and summarise one arm against ``dataset`` (a directory or loaded shards).
+
+    ``prepared`` reuses another caller's :func:`prepare_arm` result so the chunk-level view
+    and the sequence view are read off the same forward passes and the same threshold.
+    """
     resolved = seeds if isinstance(seeds, SeedSet) else resolve_seeds(seeds)
     shards = dataset if isinstance(dataset, list) else _load_shards(dataset)
-    rows = collect_replays(arm.model, shards, stride, settle_steps, resolved)
-    return summarise_arm(
-        arm.name, rows, max_jump_rate, margin=arm.margin, detail=arm.detail,
+    if prepared is None:
+        prepared = prepare_arm(arm, shards, stride, settle_steps, resolved)
+    report = summarise_arm(
+        arm.name, prepared["replays"], max_jump_rate,
+        margin=prepared["decoder"].get("jump_margin"), detail=arm.detail,
         stride=stride, settle_steps=settle_steps,
     )
+    report["evidence"] = evidence_config(*rule_from_config(prepared["decoder"]))
+    report["margin_source"] = prepared["margin_source"]
+    return report
 
 
 def paired_deltas(baseline: Dict[str, object], arm: Dict[str, object],
@@ -481,7 +583,9 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
               replays: Optional[int] = None,
               init_seed: int = 42,
               max_jump_rate: float = DEFAULT_MAX_JUMP_RATE,
-              dataset_label: Optional[str] = None) -> Dict[str, object]:
+              dataset_label: Optional[str] = None,
+              evidence_rule: Optional[str] = None,
+              evidence_decay: Optional[float] = None) -> Dict[str, object]:
     """Score every arm and the untrained baseline on one dataset, as one table.
 
     Each arm gets two views of the same data, and they answer different questions:
@@ -530,13 +634,19 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
 
     reports = []
     for arm in table:
+        # The chunk-decision pass runs first because it is what the margin is calibrated on:
+        # the sequence replay then runs the decoder the arm will actually adopt.
+        prepared = prepare_arm(arm, shards, stride, settle_steps, seed_set,
+                               rule_override=evidence_rule, decay_override=evidence_decay)
         report = sequence_report(
             arm.name, arm.model, shards, stride, settle_steps, seed_set,
-            decoder_config=arm.decoder, traces=traces, detail=arm.detail,
+            decoder_config=prepared["decoder"], traces=traces, detail=arm.detail,
         )
+        report["margin_source"] = prepared["margin_source"]
         # The budget view reads the same frames, so it is cheap next to the full replay and
         # stays attached to the arm it belongs to.
-        report["budget"] = arm_report(arm, shards, stride, settle_steps, seed_set, max_jump_rate)
+        report["budget"] = arm_report(arm, shards, stride, settle_steps, seed_set, max_jump_rate,
+                                      prepared=prepared)
         report["role"] = arm.detail.get("role", "candidate")
         reports.append(report)
 
@@ -568,6 +678,16 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
             # without implying it is one of the seeds the arm itself was scored on.
             "init_seed": init_seed,
             "max_jump_rate": max_jump_rate,
+            # The statistic every row was measured on, and the rule the shipped default of each
+            # arm was before it: a table of numbers produced by two statistics would be
+            # unreadable, so the protocol names the one it used.
+            # The statistic every row ran under, plus whether it was forced on every arm
+            # (which is how the statistic is measured apart from each arm's own threshold).
+            "evidence_by_arm": {row["arm"]: dict(row.get("evidence") or {})
+                                for row in reports},
+            "evidence_override": ({**evidence_config(evidence_rule, evidence_decay),
+                                   "forced_on_every_arm": True}
+                                  if evidence_rule is not None else None),
             "decisions_per_replay": reports[0]["budget"]["decisions_per_replay"],
             "teacher": reports[0]["teacher"],
             "thresholds": {
@@ -600,6 +720,10 @@ def format_table(report: Dict[str, object]) -> str:
         # The role is printed above the numbers, not in a footnote: a table read off the
         # wrong seed set is the defect this protocol exists to prevent.
         f"seeds {list(protocol['replay_seeds'])} -- {protocol['seeds']['note']}",
+        f"evidence rule per arm: " + ", ".join(
+            f"{name}={rule.get('evidence_rule')}@{rule.get('evidence_decay')}"
+            for name, rule in (protocol.get("evidence_by_arm") or {}).items()
+        ) + "  (the statistic the margin thresholds)",
         "",
         f"{'arm':<22}{'jump rec':>9}{'per replay':>22}{'paired delta vs untrained':>28}"
         f"{'missed':>8}{'spurious':>10}{'done':>6}{'best_x':>9}  verdict",
@@ -628,6 +752,11 @@ def format_table(report: Dict[str, object]) -> str:
         "  teacher-forced, so it stops at the first missed teacher jump and saturates for "
         "weak arms."
     )
+
+    lines.append("  margin provenance: " + "; ".join(
+        f"{row['arm']}={row.get('margin_source', {}).get('source', '-')}"
+        for row in report["table"]
+    ))
 
     lines.append("")
     lines.append(
@@ -674,17 +803,23 @@ def _load_shards(dataset) -> List[dict]:
 
 
 def decision_evidence(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
-                      shards: Sequence[dict], stride: int, settle_steps: int, seed: int):
+                      shards: Sequence[dict], stride: int, settle_steps: int, seed: int,
+                      evidence_rules: Optional[Dict[str, object]] = None):
     """Replay the supervised chunks and record the macro decision evidence.
 
     For every supervised decision point this returns ``jump_evidence - run_evidence`` as
     the *decoder* computes it, together with the labelled action. Both RNGs are reseeded
     from ``seed`` first and no weights are updated, so the draws are a pure function of
     the seed -- which is what lets two arms be compared seed by seed.
+
+    ``evidence_rules`` selects the statistic (see :mod:`evidence`); it defaults to the one
+    the decoder ships, and the evidence vector is otherwise identical in shape, so a caller
+    comparing two rules is comparing two reductions of the same draws.
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
     model.eval()
+    rule, decay = rule_from_config(evidence_rules)
     diffs, labels = [], []
     with torch.no_grad():
         for shard in shards:
@@ -694,12 +829,13 @@ def decision_evidence(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVis
             actions = shard["actions"][::stride]
             for frame, action in zip(frames, actions):
                 features, _ = preprocessor.process_frame(frame)
-                accumulated_motor = torch.zeros(model.num_motor_ganglion)
+                evidence = MotorEvidence(rule, decay)
                 for _ in range(settle_steps):
                     spikes = preprocessor.generate_poisson_spikes(features)
-                    motor_spikes, _ = model(spikes)
-                    accumulated_motor += motor_spikes
-                diffs.append(float(accumulated_motor[JUMP_ACTION] - accumulated_motor[RUN_ACTION]))
+                    motor_spikes, activations = model(spikes)
+                    evidence.observe(motor_spikes, activations, model)
+                run_evidence, jump_evidence = evidence.reduce()
+                diffs.append(float(jump_evidence - run_evidence))
                 labels.append(int(action) == JUMP_ACTION)
     return diffs, labels
 
@@ -760,6 +896,12 @@ def main() -> None:
                         help="Seed for the untrained baseline's weights (the initialization a "
                              "trained arm started from); not an evaluation seed")
     parser.add_argument("--max-jump-rate", type=float, default=DEFAULT_MAX_JUMP_RATE)
+    parser.add_argument("--evidence-rule", choices=list(RULES), default=None,
+                        help="Force one settle-window statistic on every arm, so the statistic "
+                             "is measured apart from each arm's own threshold "
+                             f"(default: each arm's own rule, else {DEFAULT_RULE})")
+    parser.add_argument("--evidence-decay", type=float, default=None,
+                        help="Recency decay for a forced leaky evidence rule")
     parser.add_argument("--output", default=None, help="Write the full report as JSON here")
     args = parser.parse_args()
 
@@ -775,6 +917,7 @@ def main() -> None:
         seeds=parse_seeds(args.seeds) if args.seeds else None,
         replays=args.replays, init_seed=args.init_seed, max_jump_rate=args.max_jump_rate,
         dataset_label=os.path.abspath(args.dataset),
+        evidence_rule=args.evidence_rule, evidence_decay=args.evidence_decay,
     )
     print(format_table(report))
     if args.output:

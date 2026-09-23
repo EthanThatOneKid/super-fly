@@ -17,6 +17,7 @@ import numpy as np
 
 import torch
 
+from evidence import DEFAULT_DECAY, DEFAULT_RULE, SHIPPED_RULE
 from macro_decoder import decision_quality
 from pretrain import pretrain_motor_layer, save_checkpoint
 from prescreen import (
@@ -561,7 +562,35 @@ class TestPrescreenTable(unittest.TestCase):
             self.assertIn("no teacher jumps", report["verdicts"][0]["note"])
             self.assertFalse(report["verdicts"][0]["pass"])
 
-    def test_the_shipped_margin_is_applied_not_refitted(self):
+    def test_a_checkpoint_that_ships_the_rule_keeps_its_own_margin(self):
+        """A margin fitted for the rule the checkpoint declares is applied, not refitted."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._shard(tmpdir)
+
+            report = arm_report(
+                Arm("candidate", untrained_model(seed=42), margin=99.0,
+                    decoder={"jump_margin": 99.0, "evidence_rule": DEFAULT_RULE,
+                             "evidence_decay": DEFAULT_DECAY}),
+                tmpdir, 1, 1, (45, 46),
+            )
+
+            self.assertEqual(report["margin"], 99.0)
+            self.assertEqual(report["at_margin"]["margin"], 99.0)
+            self.assertEqual(report["at_margin"]["jump_rate"], 0.0)
+            self.assertEqual(report["at_margin"]["jump_recall"], 0.0)
+            self.assertEqual(report["margin_source"]["source"], "checkpoint")
+            self.assertEqual(report["margin_source"]["rule_inferred"], False)
+            self.assertEqual(report["evidence"]["evidence_rule"], DEFAULT_RULE)
+            # The bounded-rate figure is unaffected by the margin: it is a budget, not a fit.
+            self.assertGreater(report["jump_recall"]["mean"], 0.0)
+
+    def test_a_checkpoint_that_predates_the_rule_keeps_the_margin_for_the_shipped_statistic(self):
+        """No declared rule means the statistic that shipped, so its own margin applies.
+
+        The rule travelling in a checkpoint is newer than the checkpoints: an undeclared one was
+        fitted under the spike sum, which is the only statistic that existed then. Re-fitting it
+        anyway would replace the shipped decoder with a re-calibration of it.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             self._shard(tmpdir)
 
@@ -569,12 +598,44 @@ class TestPrescreenTable(unittest.TestCase):
                 Arm("candidate", untrained_model(seed=42), margin=99.0), tmpdir, 1, 1, (45, 46)
             )
 
+            self.assertEqual(report["margin_source"]["source"], "checkpoint")
+            self.assertEqual(report["margin_source"]["rule"], SHIPPED_RULE)
+            self.assertTrue(report["margin_source"]["rule_inferred"])
+            self.assertIsNone(report["margin_source"]["declared_rule"])
+            self.assertEqual(report["evidence"]["evidence_rule"], SHIPPED_RULE)
             self.assertEqual(report["margin"], 99.0)
-            self.assertEqual(report["at_margin"]["margin"], 99.0)
             self.assertEqual(report["at_margin"]["jump_rate"], 0.0)
-            self.assertEqual(report["at_margin"]["jump_recall"], 0.0)
-            # The bounded-rate figure is unaffected by the margin: it is a budget, not a fit.
-            self.assertGreater(report["jump_recall"]["mean"], 0.0)
+
+    def test_a_spike_count_margin_is_not_applied_to_a_drive_statistic(self):
+        """A margin in spike counts cannot threshold a drive statistic, so it is re-fitted.
+
+        The failure this replaces is silent: a threshold in the wrong units reads as "never
+        jump" (or as "always jump"), and nothing in the report would have said which. The
+        statistic is forced on the run, which is how the drive rules are measured apart from
+        the threshold a checkpoint happens to carry.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._shard(tmpdir)
+
+            report = prescreen(
+                [Arm("candidate", untrained_model(seed=42), margin=99.0)], tmpdir,
+                stride=1, settle_steps=1, seeds=(45, 46),
+                evidence_rule="drive_leaky_recency",
+            )
+            row = report["table"][1]
+
+            self.assertEqual(row["margin_source"]["source"], "recalibrated_for_evidence_rule")
+            self.assertEqual(row["margin_source"]["shipped_margin"], 99.0)
+            self.assertEqual(row["margin_source"]["shipped_rule"], SHIPPED_RULE)
+            self.assertIsNone(row["margin_source"]["declared_rule"])
+            self.assertEqual(row["margin_source"]["margin"], row["decoder"]["jump_margin"])
+            self.assertEqual(row["decoder"]["evidence_rule"], "drive_leaky_recency")
+            # A drive-unit threshold, not the spike count the checkpoint shipped.
+            self.assertLess(abs(row["decoder"]["jump_margin"]), 10.0)
+            self.assertTrue(report["protocol"]["evidence_override"]["forced_on_every_arm"])
+            # The override is the rule every row ran under, baseline included.
+            for table_row in report["table"]:
+                self.assertEqual(table_row["evidence"]["evidence_rule"], "drive_leaky_recency")
 
     def test_the_report_renders_and_records_its_protocol(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -596,6 +657,12 @@ class TestPrescreenTable(unittest.TestCase):
             self.assertEqual(report["protocol"]["baseline"], UNTRAINED_ARM)
             self.assertEqual(report["protocol"]["decisions_per_replay"], self.SAMPLES)
             self.assertEqual(report["protocol"]["metric"], "teacher_forced_sequence")
+            # The statistic every row was measured on, and the provenance of each arm's
+            # threshold, are printed above the numbers rather than left to the JSON.
+            self.assertEqual(report["protocol"]["evidence_by_arm"]["candidate"]["evidence_rule"],
+                             DEFAULT_RULE)
+            self.assertIn(DEFAULT_RULE, text)
+            self.assertIn("margin provenance", text)
             self.assertEqual(
                 report["protocol"]["thresholds"]["min_jump_recall"], PRESCREEN_MIN_JUMP_RECALL
             )

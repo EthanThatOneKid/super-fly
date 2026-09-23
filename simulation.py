@@ -83,7 +83,8 @@ class Simulation:
                  bootstrap_episodes=20, max_bootstrap_step=600, curriculum=True, policy="agent",
                  states=None, runs_dir="runs", run_id=None, seed=None, settle_steps=DEFAULT_SETTLE_STEPS,
                  action_cadence=DEFAULT_ACTION_CADENCE, macro_jump_margin=0.0,
-                 macro_refractory_frames=0):
+                 macro_refractory_frames=0, macro_evidence_rule=None,
+                 macro_evidence_decay=None):
         self.rom_path = rom_path
         self.save_path = save_path
         self.lr = lr
@@ -104,6 +105,10 @@ class Simulation:
         self.action_cadence = action_cadence
         self.macro_jump_margin = macro_jump_margin
         self.macro_refractory_frames = macro_refractory_frames
+        # Which statistic the margin thresholds. A margin fitted on one evidence rule means
+        # nothing on another, so the rule is part of the policy the checkpoint restores.
+        self.macro_evidence_rule = macro_evidence_rule
+        self.macro_evidence_decay = macro_evidence_decay
         self.macro_decoder = self._make_macro_decoder()
         self.episode_state_resets = 0
 
@@ -197,6 +202,10 @@ class Simulation:
                 if isinstance(decoder_cfg, dict):
                     self.macro_jump_margin = decoder_cfg.get("jump_margin", self.macro_jump_margin)
                     self.macro_refractory_frames = decoder_cfg.get("refractory_frames", self.macro_refractory_frames)
+                    self.macro_evidence_rule = decoder_cfg.get(
+                        "evidence_rule", self.macro_evidence_rule)
+                    self.macro_evidence_decay = decoder_cfg.get(
+                        "evidence_decay", self.macro_evidence_decay)
                 if "action_cadence" in p_cfg or isinstance(decoder_cfg, dict):
                     self.macro_decoder = self._make_macro_decoder()
                 if "seed" in p_cfg and p_cfg["seed"] is not None:
@@ -253,6 +262,8 @@ class Simulation:
             jump_chunk_frames=self.action_cadence,
             jump_margin=self.macro_jump_margin,
             refractory_frames=self.macro_refractory_frames,
+            evidence_rule=self.macro_evidence_rule,
+            evidence_decay=self.macro_evidence_decay,
         )
 
     def get_effective_max_bootstrap_step(self, episode: int) -> int:
@@ -342,6 +353,12 @@ class Simulation:
 
         features, _ = self.preprocessor.process_frame(obs)
         accumulated_motor_spikes = torch.zeros(self.model.num_motor_ganglion)
+        # The macro decoder's evidence comes from the rule the decoder carries (see
+        # ``evidence``), which may read the motor layer's analog drive rather than the spike
+        # count. It is only accumulated for the macro policy, which is the only one that
+        # decides from it: the legacy frame-level "agent" policy and the telemetry both read
+        # the spike sum below, and it is what that policy always meant.
+        evidence = self.macro_decoder.new_evidence() if self.policy == "macro" else None
         layer_acts = None
 
         for _ in range(self.settle_steps):
@@ -354,6 +371,8 @@ class Simulation:
                 with torch.no_grad():
                     m_spikes, layer_acts = self.model(spikes)
             accumulated_motor_spikes += m_spikes
+            if evidence is not None:
+                evidence.observe(m_spikes, layer_acts, self.model)
 
         action_source = "right"
         execute_jump = False
@@ -364,7 +383,7 @@ class Simulation:
             # Bounded macro-action decoding: one chunk decision per action cadence,
             # always held to completion, replacing the unbounded frame-level jump
             # decision used by the "agent" policy.
-            macro_decision = self.macro_decoder.step(accumulated_motor_spikes)
+            macro_decision = self.macro_decoder.step(evidence.channels())  # policy == "macro"
             if macro_decision.macro == "jump":
                 execute_jump = True
                 action_source = "macro" if macro_decision.is_new_decision else "macro_hold"
@@ -438,6 +457,7 @@ class Simulation:
             "policy": self.policy,
             "settle_steps": self.settle_steps,
             "action_cadence": self.action_cadence,
+            "evidence_rule": self.macro_decoder.evidence_rule,
             "macro": macro_decision.macro if macro_decision is not None else None,
             "macro_chunk_remaining": macro_decision.frames_remaining if macro_decision is not None else 0,
             "macro_decisions": self.macro_decoder.decisions,

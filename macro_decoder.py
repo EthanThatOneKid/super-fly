@@ -22,6 +22,13 @@ actually trained on -- ``RUN_ACTION`` (RIGHT+B) and ``JUMP_ACTION`` (RIGHT+B+A),
 which are exactly the actions ``action_idx`` can take. What the decoder must not
 do is treat a jump channel as evidence for *both* alternatives, or decide on a
 channel nothing is trained to drive: see ``MacroActionDecoder.step``.
+
+*What* the decoder compares is not fixed here any more. The shipped statistic was
+the sum of binary motor spikes over the settle window; :mod:`evidence` owns the
+rules that turn a window into the evidence vector, including that one, and the
+decoder carries the chosen rule in its config because a threshold and the
+statistic it thresholds only mean anything together. ``new_evidence`` is how a
+caller gets the accumulator for this decoder's rule.
 """
 
 import math
@@ -78,7 +85,12 @@ class MacroActionDecoder:
                  jump_chunk_frames: int | None = None,
                  jump_margin: float = 0.0,
                  refractory_frames: int = 0,
-                 max_chunk_frames: int = MAX_CHUNK_FRAMES):
+                 max_chunk_frames: int = MAX_CHUNK_FRAMES,
+                 evidence_rule: str | None = None,
+                 evidence_decay: float | None = None):
+        # Imported inside the constructor on purpose: ``evidence`` imports this module's
+        # channel constants, so a module-level import here would be a cycle.
+        from evidence import DEFAULT_DECAY, DEFAULT_RULE, validate_decay, validate_rule
         self.max_chunk_frames = _require_bounded("max_chunk_frames", max_chunk_frames, 1, MAX_CHUNK_FRAMES)
         self.chunk_frames = _require_bounded("chunk_frames", chunk_frames, 1, self.max_chunk_frames)
         if jump_chunk_frames is None:
@@ -92,7 +104,16 @@ class MacroActionDecoder:
         self.jump_margin = float(jump_margin)
         if math.isnan(self.jump_margin):
             raise ValueError("jump_margin must be a number, not NaN")
+        # The evidence rule is part of the decoder, not of the training run: a margin fitted
+        # on one statistic is meaningless on another, so the two travel together.
+        self.evidence_rule = validate_rule(evidence_rule or DEFAULT_RULE)
+        self.evidence_decay = validate_decay(DEFAULT_DECAY if evidence_decay is None else evidence_decay)
         self.reset()
+
+    def new_evidence(self):
+        """A fresh settle-window accumulator for this decoder's evidence rule."""
+        from evidence import MotorEvidence
+        return MotorEvidence(self.evidence_rule, self.evidence_decay)
 
     # -- episode lifecycle -------------------------------------------------
     def reset(self) -> None:
@@ -110,8 +131,11 @@ class MacroActionDecoder:
         """Advance one emulator frame and return the active macro chunk.
 
         Args:
-            accumulated_motor_spikes: length-4 motor spike tensor summed over the
-                frame's settle window, ordered ``[NOOP, RIGHT, JUMP, RIGHT+JUMP]``.
+            accumulated_motor_spikes: length-4 evidence vector for the settle window, ordered
+                ``[NOOP, RIGHT, JUMP, RIGHT+JUMP]``. ``step`` only reads the two trained
+                channels, so under the shipped statistic this is the spike sum it always was,
+                and under a ``drive_*`` rule it is the same two channels measured on the
+                motor layer's pre-threshold drive (:mod:`evidence`).
         """
         if len(accumulated_motor_spikes) < 4:
             raise ValueError("accumulated_motor_spikes must contain the 4 motor neurons")
@@ -190,6 +214,8 @@ class MacroActionDecoder:
             "jump_margin": self.jump_margin,
             "refractory_frames": self.refractory_frames,
             "max_chunk_frames": self.max_chunk_frames,
+            "evidence_rule": self.evidence_rule,
+            "evidence_decay": self.evidence_decay,
         }
 
     def metadata(self) -> dict:
