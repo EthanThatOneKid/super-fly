@@ -2,18 +2,22 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Tuple
 
 import numpy as np
 import torch
 
 from connectome import DrosophilaConnectomeSNN
-from macro_decoder import (
-    JUMP_ACTION,
-    MAX_CHUNK_FRAMES,
-    RUN_ACTION,
-    calibrate_jump_margin,
-    decision_quality,
+from macro_decoder import MAX_CHUNK_FRAMES
+from offline_episode import sequence_report
+from prescreen import (
+    DEFAULT_MAX_JUMP_RATE,
+    DEFAULT_REPLAYS,
+    Arm,
+    arm_report,
+    calibration_record,
+    collect_replays,
+    prescreen,
 )
 from simulation import DEFAULT_SAVE_PATH, MAX_SETTLE_STEPS, DEFAULT_SETTLE_STEPS
 from trajectory import dataset_provenance, iter_dataset
@@ -38,10 +42,12 @@ WEIGHT_CLAMP = 3.0
 VISUAL_PATHWAY_MODES = ("frozen", "linear_feedback")
 #: Layers the visual-pathway mode trains, beyond the ``layer3_4`` readout.
 VISUAL_PATHWAY_LAYERS = ("layer2_3", "layer1_2", "feedback_3_2")
-#: Calibration replays pooled into one margin. A single replay is one Poisson draw
-#: per decision point, which is noisy enough that the chosen boundary swings wildly
-#: across evaluation seeds; averaging a few draws is what makes the margin stable.
-DEFAULT_CALIBRATION_REPLAYS = 3
+#: Replays per arm, shared with the pre-screen (``prescreen.DEFAULT_REPLAYS``). A single
+#: replay is one Poisson draw per decision point, which is noisy enough that both the
+#: chosen margin and the reported recall swing across evaluation seeds; repeating the
+#: measurement is what makes either stable, and the pre-screen reports every replay so the
+#: swing stays visible instead of being averaged away.
+DEFAULT_CALIBRATION_REPLAYS = DEFAULT_REPLAYS
 
 
 def target_rate_vector(action: int, width: int = 4) -> torch.Tensor:
@@ -126,76 +132,12 @@ def _weight_deltas(model: DrosophilaConnectomeSNN,
     return deltas
 
 
-def measure_chunk_decisions(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
-                            dataset, stride: int, settle_steps: int, seed: int,
-                            calibration_replays: int = DEFAULT_CALIBRATION_REPLAYS,
-                            margin: float | None = None) -> Dict[str, object]:
-    """Chunk-decision quality on a labelled dataset, with no emulator in the loop.
+# The offline chunk-decision measurement used to live here, as ``measure_chunk_decisions``
+# plus ``decision_evidence``. It moved to ``prescreen``, which scores jump-chunk recall at
+# a bounded jump rate, reports every replay rather than a pooled figure, pairs each arm
+# seed by seed against an untrained baseline, and can be run without training anything
+# (``python prescreen.py --dataset ... --checkpoint NAME=PATH``).
 
-    The emulator is the expensive, hard-to-reproduce part of a round, so the decision
-    ceiling has to be measurable without it. Replays the supervised chunks, pools
-    ``calibration_replays`` Poisson draws, and reports how well the jump/run evidence
-    separates the teacher's two chunk types.
-
-    Args:
-        dataset: dataset directory (loaded and checksum-verified) or loaded shards.
-        margin: when given, quality is reported at that margin instead of fitting one
-            (the held-out protocol: fit on the training shards, apply unchanged).
-
-    Returns:
-        the calibration (or fixed-margin) report plus how many replays fed it.
-    """
-    shards = dataset if isinstance(dataset, list) else list(iter_dataset(dataset))
-    if not shards:
-        raise ValueError("decision-quality measurement needs at least one shard")
-    if calibration_replays < 1:
-        raise ValueError("calibration_replays must be at least 1")
-
-    evidence_diffs, jump_labels = [], []
-    for replay in range(calibration_replays):
-        replay_diffs, replay_labels = decision_evidence(
-            model, preprocessor, shards, stride, settle_steps, seed + replay
-        )
-        evidence_diffs.extend(replay_diffs)
-        jump_labels.extend(replay_labels)
-
-    quality = (calibrate_jump_margin(evidence_diffs, jump_labels) if margin is None
-               else decision_quality(evidence_diffs, jump_labels, margin))
-    quality["replays"] = calibration_replays
-    quality["replay_seeds"] = [seed + replay for replay in range(calibration_replays)]
-    quality["decisions_per_replay"] = len(replay_diffs)
-    return quality
-
-
-def decision_evidence(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
-                      shards, stride: int, settle_steps: int, seed: int):
-    """Replay the supervised chunks and record the macro decision evidence.
-
-    For every supervised decision point this returns ``jump_evidence - run_evidence``
-    as the *decoder* computes it, together with the labelled action, so the jump
-    threshold can be calibrated on data rather than assumed. Runs with no weight
-    updates and a fixed seed, so calibration is reproducible.
-    """
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    model.eval()
-    diffs, labels = [], []
-    with torch.no_grad():
-        for shard in shards:
-            model.reset_state()
-            preprocessor.reset()
-            frames = shard["frames"][::stride]
-            actions = shard["actions"][::stride]
-            for frame, action in zip(frames, actions):
-                features, _ = preprocessor.process_frame(frame)
-                accumulated_motor = torch.zeros(model.num_motor_ganglion)
-                for _ in range(settle_steps):
-                    spikes = preprocessor.generate_poisson_spikes(features)
-                    motor_spikes, _ = model(spikes)
-                    accumulated_motor += motor_spikes
-                diffs.append(float(accumulated_motor[JUMP_ACTION] - accumulated_motor[RUN_ACTION]))
-                labels.append(int(action) == JUMP_ACTION)
-    return diffs, labels
 
 
 def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_LR,
@@ -300,10 +242,11 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     # readout is offset (run evidence dominates on both classes), so a hard-coded
     # zero margin reads as "never jump" and the controller cannot clear an obstacle.
     # Pooled replays are what make the boundary reflect expected evidence rather than
-    # one noisy draw; replay seeds are derived from ``seed`` and thus reproducible.
-    calibration = measure_chunk_decisions(
-        model, preprocessor, shards, stride, settle_steps, seed, calibration_replays
-    )
+    # one noisy draw; replay seeds are derived from ``seed`` and thus reproducible. The
+    # same replays then feed the pre-screen, so the arm is measured on exactly the
+    # evidence its margin was chosen from.
+    replays = collect_replays(model, shards, stride, settle_steps, seed, calibration_replays)
+    calibration = calibration_record(replays)
     decoder_config = {
         "decoder": "bounded_macro_action",
         "chunk_frames": stride,
@@ -336,10 +279,39 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         "trained_layers": sorted(layer_lrs),
         "weight_deltas": _weight_deltas(model, initial_weights),
     }
+    # The pre-screen that decides whether this checkpoint is worth an emulator run: a
+    # teacher-forced sequential replay (frames in order, the shipped decoder driving them)
+    # reporting where the run dies and the best_x that follows, paired seed by seed against
+    # an untrained network of the same architecture. Assembled by the same entry point as the
+    # standalone ``prescreen.py`` CLI, so the training path and the CLI cannot disagree about
+    # what was measured.
+    metadata["prescreen"] = prescreen(
+        [Arm(
+            "candidate",
+            model,
+            margin=calibration["margin"],
+            decoder=decoder_config,
+            detail={
+                "role": "candidate",
+                "visual_pathway": visual_pathway,
+                "epochs": epochs,
+                "learning_rate": lr,
+                "visual_learning_rate": visual_lr_used if visual_pathway != "frozen" else None,
+                "trained_layers": sorted(layer_lrs),
+                "weight_deltas": metadata["weight_deltas"],
+            },
+        )],
+        shards,
+        stride=stride,
+        settle_steps=settle_steps,
+        seed=seed,
+        replays=calibration_replays,
+        dataset_label=dataset_dir,
+    )
     if report_dataset_dir is not None:
         metadata["held_out_decision_quality"] = _held_out_decision_quality(
-            model, preprocessor, report_dataset_dir, report_env_kind, stride, settle_steps,
-            seed, calibration_replays, calibration["margin"],
+            model, report_dataset_dir, report_env_kind, stride, settle_steps,
+            seed, calibration_replays, calibration["margin"], decoder_config,
         )
     return model, metadata
 
@@ -360,21 +332,27 @@ def _require_matching_env_kind(train_dataset_dir: str, report_dataset_dir: str) 
     return report_kind
 
 
-def _held_out_decision_quality(model: DrosophilaConnectomeSNN, preprocessor: OmmatidiaVisionPreprocessor,
-                               report_dataset_dir: str, env_kind: str | None, stride: int,
-                               settle_steps: int, seed: int, calibration_replays: int,
-                               margin: float) -> Dict[str, object]:
-    """Chunk-decision quality on a dataset the weights never trained on.
+def _held_out_decision_quality(model: DrosophilaConnectomeSNN, report_dataset_dir: str,
+                               env_kind: str | None, stride: int, settle_steps: int,
+                               seed: int, calibration_replays: int, margin: float,
+                               decoder_config: Dict[str, object]) -> Dict[str, object]:
+    """Pre-screen report on a dataset the weights never trained on.
 
-    The margin comes from the training shards and is applied unchanged; re-fitting it
-    on this evidence would report the best available boundary rather than the one the
-    checkpoint actually ships.
+    The same two views as the training-side table: the sequence outcome (the gate) and the
+    chunk-decision budget view. The margin comes from the training shards and is applied
+    unchanged, so ``budget.at_margin`` shows what the checkpoint actually ships; the sequence
+    replay uses the decoder the checkpoint ships, chunk lengths and refractory period included.
     """
-    quality = measure_chunk_decisions(
-        model, preprocessor, list(iter_dataset(report_dataset_dir)), stride, settle_steps,
-        seed, calibration_replays, margin=margin,
+    shards = list(iter_dataset(report_dataset_dir))
+    report = sequence_report(
+        "candidate", model, shards, stride, settle_steps, seed, calibration_replays,
+        decoder_config=decoder_config, detail={"role": "held_out"},
     )
-    return {"env_kind": env_kind, "dataset": dataset_provenance(report_dataset_dir), **quality}
+    report["budget"] = arm_report(
+        Arm("candidate", model, margin=margin, decoder=decoder_config), shards,
+        stride, settle_steps, seed, calibration_replays, DEFAULT_MAX_JUMP_RATE,
+    )
+    return {"env_kind": env_kind, "dataset": dataset_provenance(report_dataset_dir), **report}
 
 
 def save_checkpoint(model: DrosophilaConnectomeSNN, path: str, metadata: Dict[str, object]) -> None:
@@ -422,7 +400,7 @@ def main() -> None:
     parser.add_argument("--visual-lr", type=float, default=None,
                         help="Learning rate for the visual pathway (defaults to --lr)")
     parser.add_argument("--report-dataset", default=None,
-                        help="Held-out dataset to report chunk-decision quality on, at the training margin")
+                        help="Held-out dataset to pre-screen at the training margin")
     args = parser.parse_args()
     model, metadata = pretrain_motor_layer(
         args.dataset, args.epochs, args.lr, args.stride, args.settle_steps, args.seed,
@@ -431,15 +409,40 @@ def main() -> None:
     )
     save_checkpoint(model, args.output, metadata)
     calibration = metadata["decoder"]["calibration"]
+    measurement = metadata["prescreen"]
+    baseline, candidate = measurement["table"][0], measurement["table"][1]
+    paired = measurement["paired"][0]
+    verdict = measurement["verdicts"][0]
     print(json.dumps({
         "checkpoint": os.path.abspath(args.output),
         "visual_pathway": metadata["visual_pathway"],
         "motor_argmax_accuracy": round(metadata["motor_argmax_accuracy"], 4),
-        "calibrated_balanced_accuracy": calibration["balanced_accuracy"],
-        "jump_recall": calibration["jump_recall"],
-        "jump_rate": calibration["jump_rate"],
-        "target_jump_rate": calibration["target_jump_rate"],
-        "held_out": metadata.get("held_out_decision_quality", {}).get("balanced_accuracy"),
+        "prescreen": {
+            "offline_best_x": candidate["offline_best_x"]["mean"],
+            "per_replay_best_x": candidate["offline_best_x"]["values"],
+            "untrained_best_x": baseline["offline_best_x"]["mean"],
+            "required_jumps": candidate["teacher"]["required_jumps"],
+            "missed_jumps": candidate["missed_jumps"]["mean"],
+            "spurious_jumps": candidate["spurious_jumps"]["mean"],
+            "offline_completion_rate": candidate["offline_completion_rate"],
+            "paired_mean_delta": paired["mean_delta"],
+            "paired_improved": f"{paired['improved']}/{paired['paired_replays']}",
+            "pass": verdict["pass"],
+            "failed_criteria": [c["criterion"] for c in verdict["criteria"] if not c["pass"]],
+        },
+        "budget_view": {
+            "max_jump_rate": measurement["protocol"]["max_jump_rate"],
+            "jump_recall": candidate["budget"]["jump_recall"]["mean"],
+            "per_replay_recall": candidate["budget"]["jump_recall"]["values"],
+            "random_recall": candidate["budget"]["random_recall"]["mean"],
+            "untrained_recall": baseline["budget"]["jump_recall"]["mean"],
+        },
+        "shipping_margin": calibration["margin"],
+        "shipping_margin_quality": {
+            key: candidate["budget"]["at_margin"][key]
+            for key in ("jump_recall", "jump_rate", "balanced_accuracy")
+        },
+        "held_out": metadata.get("held_out_decision_quality", {}).get("offline_best_x"),
         "weight_deltas": metadata["weight_deltas"],
     }, indent=2))
 

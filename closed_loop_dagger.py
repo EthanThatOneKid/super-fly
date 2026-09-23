@@ -248,6 +248,10 @@ def run_iteration(iteration, checkpoint, teacher_dataset, labeler, env_factory, 
                 "samples_by_origin",
                 "decoder",
                 "jump_margin",
+                # The offline measurement this round was justified by, carried whole: the
+                # per-replay jump recall at the decoder's jump budget, the untrained
+                # baseline it was paired against, and the criteria it did or did not meet.
+                "prescreen",
             )
         },
         "dataset_metadata": dataset_info.get("metadata", {}),

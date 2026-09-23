@@ -1,3 +1,5 @@
+import json
+import math
 import unittest
 
 import torch
@@ -202,6 +204,41 @@ class TestJumpMarginCalibration(unittest.TestCase):
         self.assertEqual(matched["method"], "jump_rate")
         self.assertAlmostEqual(matched["jump_rate"], 0.5, places=6)
         self.assertAlmostEqual(matched["target_jump_rate"], 0.5)
+
+    def test_the_calibrated_margin_is_always_finite_and_json_safe(self):
+        """An infinite margin prints as ``Infinity``, which is not JSON.
+
+        The boundary meaning "jump on every decision" used to be ``-math.inf``, so an
+        inseparable readout published a decoder that jumps on everything and wrote a
+        checkpoint no strict JSON reader would accept.
+        """
+        labels = [False] * 90 + [True] * 10
+
+        inseparable = calibrate_jump_margin([-1.0] * 100, labels)
+
+        self.assertTrue(math.isfinite(inseparable["margin"]))
+        self.assertEqual(json.loads(json.dumps(inseparable))["margin"], inseparable["margin"])
+
+    def test_a_calibration_that_does_not_separate_says_so(self):
+        """Ties are broken toward jumping on everything, so degeneracy must be visible."""
+        labels = [False] * 90 + [True] * 10
+
+        # Identical evidence for both classes: no boundary beats the constant rules.
+        degenerate = calibrate_jump_margin([-1.0] * 100, labels)
+        self.assertTrue(degenerate["degenerate"])
+        self.assertIn("does not separate", degenerate["degenerate_reason"])
+        self.assertEqual(degenerate["balanced_accuracy"], 0.5)
+        self.assertEqual(degenerate["jump_rate"], 1.0)
+
+        separable = calibrate_jump_margin(
+            self.OFFSET_RUN + self.OFFSET_JUMP, [False] * 6 + [True] * 6
+        )
+        self.assertFalse(separable["degenerate"])
+        self.assertIsNone(separable["degenerate_reason"])
+
+        single_class = calibrate_jump_margin([-1.0, -2.0], [True, True])
+        self.assertTrue(single_class["degenerate"])
+        self.assertIn("one chunk class", single_class["degenerate_reason"])
 
     def test_single_class_is_reported_not_guessed(self):
         calibrated = calibrate_jump_margin([-1.0, -2.0, -3.0], [False, False, False])

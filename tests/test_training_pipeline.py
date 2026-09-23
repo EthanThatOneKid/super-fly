@@ -144,6 +144,50 @@ class TestTrainingPipeline(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1, calibration_replays=0)
 
+    def test_pretraining_publishes_a_paired_prescreen_over_an_untrained_baseline(self):
+        """The offline measurement that gates an emulator run travels with the weights.
+
+        A checkpoint whose numbers cannot be read against an untrained network and the
+        chance rate at the same budget is the situation this replacement exists to end.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            frames = [np.zeros((240, 256, 3), dtype=np.uint8) for _ in range(8)]
+            actions = [1, 1, 3, 3, 1, 1, 3, 1]
+            # A teacher that walks right and jumps once: without a takeoff in the shard the
+            # sequence metric is undefined for every arm, which is a different report.
+            ram = []
+            for index in range(8):
+                row = np.zeros(0x800, dtype=np.uint8)
+                x = 40 + index * 50
+                row[0x006D] = (x // 256) % 256
+                row[0x0086] = x % 256
+                row[0x001D] = 1 if index == 5 else (2 if index == 6 else 0)
+                ram.append(row)
+            write_shard(tmpdir, frames, actions, ram, [False] * 8, [False] * 8, {"level": "Level1-1"})
+
+            _, metadata = pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1, stride=1, seed=42)
+            measurement = metadata["prescreen"]
+            calibration = metadata["decoder"]["calibration"]
+
+            self.assertEqual([row["arm"] for row in measurement["table"]], ["untrained", "candidate"])
+            self.assertEqual(measurement["table"][0]["role"], "untrained_baseline")
+            # The gate is the episode-shaped score; the chunk-decision budget is the
+            # supporting view, and both are paired seed by seed against the baseline.
+            self.assertEqual(measurement["protocol"]["metric"], "teacher_forced_sequence")
+            self.assertEqual(measurement["paired"][0]["metric"], "jump_sequence_recall")
+            self.assertEqual(measurement["paired_budget"][0]["metric"], "jump_recall")
+            self.assertEqual(measurement["paired"][0]["paired_replays"], calibration["replays"])
+            candidate = measurement["table"][1]
+            self.assertEqual(len(candidate["per_replay"]), calibration["replays"])
+            self.assertIn("offline_best_x", candidate["per_replay"][0])
+            self.assertEqual(candidate["budget"]["margin"], metadata["jump_margin"])
+            self.assertEqual(measurement["protocol"]["max_jump_rate"], 0.35)
+            self.assertEqual(
+                [c["criterion"] for c in measurement["verdicts"][0]["criteria"]],
+                ["offline_completion", "jump_sequence_recall", "jump_rate_within_budget",
+                 "beats_untrained", "consistent_across_replays"],
+            )
+
 
 class TestVisualPathwayPretraining(unittest.TestCase):
     """Training the visual pathway, not only the motor readout.
@@ -274,10 +318,25 @@ class TestVisualPathwayPretraining(unittest.TestCase):
             training = metadata["decoder"]["calibration"]
             held_out = metadata["held_out_decision_quality"]
             self.assertEqual(training["method"], "balanced_accuracy")
-            self.assertEqual(held_out["method"], "fixed_margin")
-            self.assertEqual(held_out["margin"], training["margin"])
-            self.assertEqual(held_out["decisions_per_replay"], 4)
-            self.assertEqual(held_out["samples"], 4 * training["replays"])
+            # Two views of the same held-out evidence: the sequence outcome the gate reads,
+            # and the shipped margin under ``budget``. The margin is applied, never re-fitted.
+            self.assertEqual(held_out["metric"], "teacher_forced_sequence")
+            self.assertEqual(held_out["detail"]["role"], "held_out")
+            self.assertEqual(held_out["replays"], training["replays"])
+            self.assertEqual(len(held_out["per_replay"]), training["replays"])
+            self.assertEqual(held_out["per_replay"][0]["decisions"], [4])
+            self.assertIsNotNone(held_out["offline_best_x"]["mean"])
+            self.assertEqual(
+                held_out["per_replay"][0]["outcomes"][0]["fatality_model"],
+                "any_missed_teacher_jump_ends_run",
+            )
+            self.assertEqual(len(held_out["per_replay"][0]["outcomes"]), 1)
+            self.assertEqual(held_out["budget"]["at_margin"]["method"], "fixed_margin")
+            self.assertEqual(held_out["budget"]["at_margin"]["margin"], training["margin"])
+            self.assertEqual(held_out["budget"]["margin"], training["margin"])
+            self.assertEqual(held_out["budget"]["decisions_per_replay"], 4)
+            self.assertEqual(held_out["budget"]["per_replay"][0]["chunks"], 4)
+            self.assertEqual(held_out["budget"]["max_jump_rate"], 0.35)
             self.assertEqual(held_out["env_kind"], "stable-retro")
             self.assertTrue(held_out["dataset"]["checksums_verified"])
 

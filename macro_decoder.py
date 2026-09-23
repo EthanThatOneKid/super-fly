@@ -261,10 +261,13 @@ def calibrate_jump_margin(evidence_diffs, jump_labels, method: str = "balanced_a
             class cannot win) or ``jump_rate`` (match the labelled jump frequency).
 
     Returns:
-        dict with ``margin`` plus the recall/jump-rate achieved at it. When only one
-        class is present the calibration is undefined and margin 0.0 is returned
-        with ``method: insufficient_classes`` -- an honest failure, not a silent
-        default that happens to look calibrated.
+        dict with ``margin`` plus the recall/jump-rate achieved at it. The margin is
+        always finite, so the checkpoint stays valid JSON. When only one class is present
+        the calibration is undefined and margin 0.0 is returned with
+        ``method: insufficient_classes`` -- an honest failure, not a silent default that
+        happens to look calibrated -- and when no boundary beats the two constant rules
+        the result is flagged ``degenerate``, because a tie here is broken toward jumping
+        on everything.
     """
     diffs = [float(d) for d in evidence_diffs]
     labels = [bool(label) for label in jump_labels]
@@ -285,10 +288,16 @@ def calibrate_jump_margin(evidence_diffs, jump_labels, method: str = "balanced_a
             "run_recall": None,
             "jump_rate": None,
             "target_jump_rate": round(n_jump / len(labels), 4) if labels else None,
+            "degenerate": True,
+            "degenerate_reason": "only one chunk class is present: no boundary is defined",
         }
 
-    # Candidate boundaries: every observed value (predicting "jump" strictly above it).
-    candidates = sorted(set(diffs + [-math.inf, math.inf]))
+    # Candidate boundaries: every observed value (predicting "jump" strictly above it),
+    # plus one sentinel on each side that is strictly beyond the evidence. The sentinels
+    # are finite on purpose: ``math.inf``/``-math.inf`` would serialize into the checkpoint
+    # as ``Infinity`` -- not valid JSON, and silently accepted by Python's loader -- and the
+    # extremes are exactly the cases a reader most needs to be able to see plainly.
+    candidates = sorted(set(diffs + [min(diffs) - 1.0, max(diffs) + 1.0]))
     best = None
     for margin in candidates:
         predicted = [d > margin for d in diffs]
@@ -307,6 +316,12 @@ def calibrate_jump_margin(evidence_diffs, jump_labels, method: str = "balanced_a
                 "jump_rate": jump_rate,
             }
 
+    # Balanced accuracy 0.5 is what the two constant rules already score, so a boundary
+    # that only ties them carries no information about the two chunk classes. That is an
+    # honest outcome to report and a dangerous one to hide: the tie is broken toward the
+    # lowest candidate, i.e. toward jumping on *every* decision, so a degenerate
+    # calibration ships a jump-happy controller unless someone notices.
+    degenerate = bool(best["balanced_accuracy"] <= 0.5 + 1e-9)
     return {
         "margin": float(best["margin"]),
         "method": method,
@@ -317,4 +332,9 @@ def calibrate_jump_margin(evidence_diffs, jump_labels, method: str = "balanced_a
         "run_recall": round(best["run_recall"], 4),
         "jump_rate": round(best["jump_rate"], 4),
         "target_jump_rate": round(n_jump / len(labels), 4),
+        "degenerate": degenerate,
+        "degenerate_reason": (
+            "no boundary beats the constant rules: the evidence does not separate the two "
+            "chunk classes, so this margin is not a decision criterion"
+        ) if degenerate else None,
     }
