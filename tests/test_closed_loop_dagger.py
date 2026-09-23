@@ -43,7 +43,9 @@ def runner_args(tmpdir, **overrides):
         "--save-path", str(Path(tmpdir) / "missing_checkpoint.pth"),
         "--runs-dir", str(Path(tmpdir) / "runs"),
         "--train-seeds", "0",
-        "--eval-seeds", "42",
+        # Dev seeds: the rounds below iterate, and a round is tuned by reading its own
+        # score, so the reserved set is opt-in via ``--eval-seeds 42,43,44``.
+        "--eval-seeds", "45",
         "--episodes", "1",
         "--max-steps", "40",
         "--rollout-steps", "40",
@@ -78,6 +80,59 @@ class TestBaselineVerdict(unittest.TestCase):
         self.assertFalse(verdict["best_x_above_baseline"])
         self.assertFalse(verdict["improved_completion_behavior"])
         self.assertFalse(verdict["p0_gate_met"])
+
+
+class TestSeedRoles(unittest.TestCase):
+    """The reserved set is the only set the P0 gate can be met on."""
+
+    def _evaluation(self, role, env_kind="stable-retro", completion_rate=1.0):
+        return {
+            "model_only": True,
+            "best_x": 3243,
+            "completion_rate": completion_rate,
+            "env_kind": env_kind,
+            "seed_role": role,
+        }
+
+    def test_a_completion_on_dev_seeds_is_not_the_gate(self):
+        verdict = baseline_verdict(self._evaluation("dev"))
+
+        self.assertTrue(verdict["improved_completion_behavior"])
+        self.assertFalse(verdict["claim_eligible"])
+        self.assertFalse(verdict["p0_gate_met"])
+        self.assertEqual(verdict["seed_role"], "dev")
+
+    def test_a_completion_on_the_reserved_seeds_is_the_gate(self):
+        verdict = baseline_verdict(self._evaluation("gate"))
+
+        self.assertTrue(verdict["claim_eligible"])
+        self.assertTrue(verdict["p0_gate_met"])
+
+    def test_the_synthetic_environment_still_cannot_claim_it(self):
+        verdict = baseline_verdict(self._evaluation("gate", env_kind=OFFLINE_ENV_KIND))
+
+        self.assertFalse(verdict["claim_eligible"])
+        self.assertFalse(verdict["p0_gate_met"])
+
+    def test_a_seed_set_straddling_the_two_roles_is_refused(self):
+        import tempfile
+
+        for seeds in ("42,45", "42", "43,44"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with self.assertRaises(ValueError):
+                    build_report(runner_args(tmpdir, mode="baseline", eval_seeds=seeds))
+
+    def test_the_whole_reserved_set_is_accepted_and_recorded(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report, _ = build_report(
+                runner_args(tmpdir, mode="baseline", eval_seeds="42,43,44")
+            )
+
+            self.assertEqual(report["config"]["eval_seeds"], [42, 43, 44])
+            self.assertEqual(report["config"]["eval_seed_role"], "gate")
+            self.assertIn("report-only", report["config"]["eval_seeds_note"])
 
 
 class TestRunnerOffline(unittest.TestCase):
@@ -141,11 +196,16 @@ class TestRunnerOffline(unittest.TestCase):
             self.assertLessEqual(pretraining["samples"], iteration["dataset"]["total_samples"])
 
             self.assertTrue(iteration["evaluation"]["model_only"])
-            self.assertEqual(iteration["evaluation"]["seeds"], [42])
+            self.assertEqual(iteration["evaluation"]["seeds"], [45])
+            self.assertEqual(iteration["evaluation"]["seed_role"], "dev")
             self.assertTrue(iteration["evaluation"]["cadence_consistent"])
             self.assertEqual(iteration["evaluation"]["total_assisted_jump_frames"], 0)
 
-            self.assertEqual(report["config"]["eval_seeds"], [42])
+            self.assertEqual(report["config"]["eval_seeds"], [45])
+            self.assertEqual(report["config"]["eval_seed_role"], "dev")
+            self.assertIn("tuning only", report["config"]["eval_seeds_note"])
+            # A dev-seed run cannot carry the P0 claim, whatever it scores.
+            self.assertFalse(report["verdict"]["claim_eligible"])
             self.assertEqual(report["config"]["train_seeds"], [0])
 
             # The iteration dataset is on disk and its manifest references a real checkpoint.

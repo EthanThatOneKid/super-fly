@@ -9,6 +9,7 @@ import torch
 
 from connectome import DrosophilaConnectomeSNN
 from pretrain import output_errors, save_checkpoint, target_rate_vector, pretrain_motor_layer
+from seed_policy import DEV_ROLE, DEV_SEEDS
 from simulation import Simulation
 from trajectory import iter_dataset, slice_dataset, write_shard
 
@@ -144,6 +145,25 @@ class TestTrainingPipeline(unittest.TestCase):
             with self.assertRaises(ValueError):
                 pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1, calibration_replays=0)
 
+    def _teacher_shard(self, dataset_dir):
+        """A teacher that walks right and jumps once.
+
+        Without a takeoff in the shard the sequence metric is undefined for every arm,
+        which is a different report from a measured one.
+        """
+        frames = [np.zeros((240, 256, 3), dtype=np.uint8) for _ in range(8)]
+        actions = [1, 1, 3, 3, 1, 1, 3, 1]
+        ram = []
+        for index in range(8):
+            row = np.zeros(0x800, dtype=np.uint8)
+            x = 40 + index * 50
+            row[0x006D] = (x // 256) % 256
+            row[0x0086] = x % 256
+            row[0x001D] = 1 if index == 5 else (2 if index == 6 else 0)
+            ram.append(row)
+        write_shard(dataset_dir, frames, actions, ram, [False] * 8, [False] * 8, {"level": "Level1-1"})
+        return dataset_dir
+
     def test_pretraining_publishes_a_paired_prescreen_over_an_untrained_baseline(self):
         """The offline measurement that gates an emulator run travels with the weights.
 
@@ -151,19 +171,7 @@ class TestTrainingPipeline(unittest.TestCase):
         chance rate at the same budget is the situation this replacement exists to end.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
-            frames = [np.zeros((240, 256, 3), dtype=np.uint8) for _ in range(8)]
-            actions = [1, 1, 3, 3, 1, 1, 3, 1]
-            # A teacher that walks right and jumps once: without a takeoff in the shard the
-            # sequence metric is undefined for every arm, which is a different report.
-            ram = []
-            for index in range(8):
-                row = np.zeros(0x800, dtype=np.uint8)
-                x = 40 + index * 50
-                row[0x006D] = (x // 256) % 256
-                row[0x0086] = x % 256
-                row[0x001D] = 1 if index == 5 else (2 if index == 6 else 0)
-                ram.append(row)
-            write_shard(tmpdir, frames, actions, ram, [False] * 8, [False] * 8, {"level": "Level1-1"})
+            self._teacher_shard(tmpdir)
 
             _, metadata = pretrain_motor_layer(tmpdir, epochs=1, settle_steps=1, stride=1, seed=42)
             measurement = metadata["prescreen"]
@@ -187,6 +195,36 @@ class TestTrainingPipeline(unittest.TestCase):
                 ["offline_completion", "jump_sequence_recall", "jump_rate_within_budget",
                  "beats_untrained", "consistent_across_replays"],
             )
+            # Training fits and pre-screens on dev seeds. The margins this produces are read
+            # by whoever compares arms, so a fit on the reserved set would put the claim's own
+            # seeds inside the instrument that selects what gets claimed.
+            self.assertEqual(calibration["replay_seeds"], list(DEV_SEEDS[:calibration["replays"]]))
+            self.assertEqual(measurement["protocol"]["seed_role"], DEV_ROLE)
+            self.assertEqual(metadata["eval_seed_role"], DEV_ROLE)
+            self.assertEqual(metadata["eval_seeds"], list(DEV_SEEDS[:calibration["replays"]]))
+
+    def test_training_refuses_to_calibrate_on_the_reserved_gate_seeds(self):
+        """Fitting on the seeds the claim is reported on leaks the claim into the fit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._teacher_shard(tmpdir)
+
+            for reserved in ((42, 43, 44), (42,), (43, 45)):
+                with self.assertRaises(ValueError):
+                    pretrain_motor_layer(
+                        tmpdir, epochs=1, stride=1, settle_steps=1, eval_seeds=reserved
+                    )
+
+    def test_training_accepts_any_dev_seed_set_and_records_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._teacher_shard(tmpdir)
+
+            _, metadata = pretrain_motor_layer(
+                tmpdir, epochs=1, stride=1, settle_steps=1, eval_seeds=(48, 49)
+            )
+
+            self.assertEqual(metadata["eval_seeds"], [48, 49])
+            self.assertEqual(metadata["decoder"]["calibration"]["replay_seeds"], [48, 49])
+            self.assertEqual(metadata["prescreen"]["protocol"]["replay_seeds"], [48, 49])
 
 
 class TestVisualPathwayPretraining(unittest.TestCase):

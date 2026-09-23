@@ -28,6 +28,13 @@ answers whether catching them survives being a sequence.
 Both views are reported per replay (never pooled into a single figure), paired across arms
 on the replay seed they share, and every table carries an untrained baseline measured from
 the initialization a trained arm starts from.
+
+The seeds themselves are split by role (``seed_policy``). This module is a *tuning*
+instrument -- it exists to decide whether an arm has earned an emulator run -- so it runs on
+the dev seeds, and the reserved gate seeds the closed loop reports its model-only
+evaluation on are report-only here. Handing it the reserved set raises rather than
+reporting a number somebody would then pick an arm from: every arm in the published table
+was selected while watching that set, and re-scoring it there cannot undo that.
 """
 
 import argparse
@@ -43,6 +50,15 @@ import torch
 from connectome import DrosophilaConnectomeSNN
 from macro_decoder import JUMP_ACTION, RUN_ACTION, calibrate_jump_margin, decision_quality
 from offline_episode import sequence_report, teacher_traces
+from seed_policy import (
+    DEFAULT_REPLAYS,
+    DEV_SEEDS,
+    GATE_ROLE,
+    GATE_SEEDS,
+    SeedSet,
+    parse_seeds,
+    resolve_seeds,
+)
 from simulation import DEFAULT_SETTLE_STEPS
 from trajectory import dataset_provenance, iter_dataset
 from vision import OmmatidiaVisionPreprocessor
@@ -52,10 +68,9 @@ from vision import OmmatidiaVisionPreprocessor
 #: little above that leaves an arm room to over-fire deliberately without turning into a
 #: jump-happy policy; the number is recorded in every report so a reader never has to guess.
 DEFAULT_MAX_JUMP_RATE = 0.35
-#: Replications per arm. Each one is an independent Poisson draw over the same chunks,
-#: which is the dominant source of noise in this measurement, so one replay is not a
-#: measurement -- it is a sample.
-DEFAULT_REPLAYS = 3
+# ``DEFAULT_REPLAYS`` is imported from ``seed_policy`` above and re-exported here for the
+# callers that pass a replay count, so the default count and the dev-seed range cannot
+# drift apart.
 #: Required-jump recall the sequence has to hold. The teacher needs every one of its jumps to
 #: reach the flagpole, so the only principled way to set this is the survival it implies: at
 #: 0.90 across ~20 required jumps a run still survives only ~12% of the time, and anything
@@ -196,7 +211,7 @@ def recall_at_bounded_rate(evidence_diffs: Sequence[float], jump_labels: Sequenc
 
 
 def collect_replays(model: DrosophilaConnectomeSNN, shards: Sequence[dict], stride: int,
-                    settle_steps: int, seed: int, replays: int = DEFAULT_REPLAYS) -> List[Dict[str, object]]:
+                    settle_steps: int, seeds) -> List[Dict[str, object]]:
     """One evidence row per replay, keyed by replay seed.
 
     The replay seed is the pairing key: ``decision_evidence`` reseeds both RNGs from it
@@ -204,13 +219,15 @@ def collect_replays(model: DrosophilaConnectomeSNN, shards: Sequence[dict], stri
     draws over the same chunk order and differ only in what their weights make of them.
     That is what makes a seed-wise delta a paired comparison rather than two independent
     samples that happen to be adjacent in a table.
+
+    The seeds are given outright -- a :class:`~seed_policy.SeedSet`, or a sequence that
+    ``resolve_seeds`` accepts -- rather than derived from a base seed, because the
+    derivation (``base + index``) is precisely how a tuning run became the reserved triple.
     """
-    if replays < 1:
-        raise ValueError("replays must be at least 1")
+    resolved = seeds if isinstance(seeds, SeedSet) else resolve_seeds(seeds)
     preprocessor = vision_preprocessor()
     rows = []
-    for replay in range(replays):
-        replay_seed = seed + replay
+    for replay_seed in resolved.seeds:
         diffs, labels = decision_evidence(model, preprocessor, shards, stride, settle_steps, replay_seed)
         rows.append({"replay_seed": replay_seed, "diffs": diffs, "labels": labels})
     return rows
@@ -307,12 +324,12 @@ def summarise_arm(name: str, replays: Sequence[Dict[str, object]],
     return report
 
 
-def arm_report(arm: Arm, dataset, stride: int, settle_steps: int, seed: int,
-               replays: int = DEFAULT_REPLAYS,
+def arm_report(arm: Arm, dataset, stride: int, settle_steps: int, seeds,
                max_jump_rate: float = DEFAULT_MAX_JUMP_RATE) -> Dict[str, object]:
     """Collect and summarise one arm against ``dataset`` (a directory or loaded shards)."""
+    resolved = seeds if isinstance(seeds, SeedSet) else resolve_seeds(seeds)
     shards = dataset if isinstance(dataset, list) else _load_shards(dataset)
-    rows = collect_replays(arm.model, shards, stride, settle_steps, seed, replays)
+    rows = collect_replays(arm.model, shards, stride, settle_steps, resolved)
     return summarise_arm(
         arm.name, rows, max_jump_rate, margin=arm.margin, detail=arm.detail,
         stride=stride, settle_steps=settle_steps,
@@ -459,8 +476,10 @@ def _verdict_note(paired: Optional[Dict[str, object]]) -> Optional[str]:
 
 
 def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
-              settle_steps: int = DEFAULT_SETTLE_STEPS, seed: int = 42,
-              replays: int = DEFAULT_REPLAYS,
+              settle_steps: int = DEFAULT_SETTLE_STEPS,
+              seeds: Optional[Sequence[int]] = None,
+              replays: Optional[int] = None,
+              init_seed: int = 42,
               max_jump_rate: float = DEFAULT_MAX_JUMP_RATE,
               dataset_label: Optional[str] = None) -> Dict[str, object]:
     """Score every arm and the untrained baseline on one dataset, as one table.
@@ -476,10 +495,28 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
     against the same windows and their outcomes are comparable decision for decision. The
     baseline is not optional: it is built here, from the same initialization a trained arm
     starts from, and it is the row every paired delta is measured against.
+
+    Seeds default to dev seeds and may not be the reserved gate set: this is the instrument
+    that decides whether to spend an emulator run, so it is iteration by definition, and the
+    arms it scores were selected by reading it.
+
+    ``init_seed`` is a separate axis, and deliberately so. It seeds the *weights* of the
+    untrained baseline, which has to be the initialization the candidate actually started
+    from -- otherwise the null arm is a different null. It is not an evaluation seed and
+    does not enter the dev/reserved split.
     """
     arms = list(arms)
     if any(arm.name == UNTRAINED_ARM for arm in arms):
         raise ValueError(f"{UNTRAINED_ARM!r} is reserved for the baseline arm")
+    seed_set = resolve_seeds(seeds, replays)
+    if seed_set.role == GATE_ROLE:
+        raise ValueError(
+            f"the pre-screen is a tuning instrument and may not run on the reserved gate "
+            f"seeds {list(GATE_SEEDS)}: it decides whether an arm has earned an emulator "
+            f"run, so it is measured on dev seeds {list(DEV_SEEDS)}, and the arms in it "
+            "were chosen by reading it. A claim is made from the emulator evaluation, "
+            "which is what the reserved set is for."
+        )
 
     shards = dataset if isinstance(dataset, list) else _load_shards(dataset)
     if not shards:
@@ -488,18 +525,18 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
         raise ValueError("stride must be positive")
 
     traces = teacher_traces(shards, stride)
-    table = [Arm(UNTRAINED_ARM, untrained_model(seed), detail={"role": "untrained_baseline"})]
+    table = [Arm(UNTRAINED_ARM, untrained_model(init_seed), detail={"role": "untrained_baseline"})]
     table.extend(arms)
 
     reports = []
     for arm in table:
         report = sequence_report(
-            arm.name, arm.model, shards, stride, settle_steps, seed, replays,
+            arm.name, arm.model, shards, stride, settle_steps, seed_set,
             decoder_config=arm.decoder, traces=traces, detail=arm.detail,
         )
         # The budget view reads the same frames, so it is cheap next to the full replay and
         # stays attached to the arm it belongs to.
-        report["budget"] = arm_report(arm, shards, stride, settle_steps, seed, replays, max_jump_rate)
+        report["budget"] = arm_report(arm, shards, stride, settle_steps, seed_set, max_jump_rate)
         report["role"] = arm.detail.get("role", "candidate")
         reports.append(report)
 
@@ -523,9 +560,13 @@ def prescreen(arms: Sequence[Arm], dataset, stride: int = 15,
             "dataset_provenance": dataset_provenance(dataset) if isinstance(dataset, str) else None,
             "stride": stride,
             "settle_steps": settle_steps,
-            "seed": seed,
-            "replays": replays,
-            "replay_seeds": [seed + replay for replay in range(replays)],
+            "seed_role": seed_set.role,
+            "replays": len(seed_set.seeds),
+            "replay_seeds": list(seed_set.seeds),
+            "seeds": seed_set.to_dict(),
+            # The baseline's initialization seed, recorded so the null arm is reproducible
+            # without implying it is one of the seeds the arm itself was scored on.
+            "init_seed": init_seed,
             "max_jump_rate": max_jump_rate,
             "decisions_per_replay": reports[0]["budget"]["decisions_per_replay"],
             "teacher": reports[0]["teacher"],
@@ -553,9 +594,12 @@ def format_table(report: Dict[str, object]) -> str:
         "pre-screen: teacher-forced sequence (the gate), with the chunk-decision budget "
         "view below it",
         (f"dataset {protocol['dataset']}  cadence {protocol['stride']}  "
-         f"settle {protocol['settle_steps']}  seed {protocol['seed']}  replays {protocol['replays']}  "
+         f"settle {protocol['settle_steps']}  replays {protocol['replays']}  "
          f"teacher {teacher['required_jumps']} required jumps, max_x {teacher['max_x']}, "
          f"reached end {teacher['reached_end']}"),
+        # The role is printed above the numbers, not in a footnote: a table read off the
+        # wrong seed set is the defect this protocol exists to prevent.
+        f"seeds {list(protocol['replay_seeds'])} -- {protocol['seeds']['note']}",
         "",
         f"{'arm':<22}{'jump rec':>9}{'per replay':>22}{'paired delta vs untrained':>28}"
         f"{'missed':>8}{'spurious':>10}{'done':>6}{'best_x':>9}  verdict",
@@ -707,8 +751,14 @@ def main() -> None:
                         metavar="NAME=PATH", help="Candidate checkpoint; repeatable")
     parser.add_argument("--stride", type=int, default=15, help="Action cadence")
     parser.add_argument("--settle-steps", type=int, default=DEFAULT_SETTLE_STEPS)
-    parser.add_argument("--seed", type=int, default=42, help="First replay seed (arms pair on it)")
-    parser.add_argument("--replays", type=int, default=DEFAULT_REPLAYS)
+    parser.add_argument("--seeds", default=None,
+                        help=f"Comma-separated dev-seed list (default {list(DEV_SEEDS[:DEFAULT_REPLAYS])}); "
+                             f"the reserved gate seeds {list(GATE_SEEDS)} are refused")
+    parser.add_argument("--replays", type=int, default=None,
+                        help=f"How many dev seeds to spend (default {DEFAULT_REPLAYS})")
+    parser.add_argument("--init-seed", type=int, default=42,
+                        help="Seed for the untrained baseline's weights (the initialization a "
+                             "trained arm started from); not an evaluation seed")
     parser.add_argument("--max-jump-rate", type=float, default=DEFAULT_MAX_JUMP_RATE)
     parser.add_argument("--output", default=None, help="Write the full report as JSON here")
     args = parser.parse_args()
@@ -722,7 +772,8 @@ def main() -> None:
 
     report = prescreen(
         arms, args.dataset, stride=args.stride, settle_steps=args.settle_steps,
-        seed=args.seed, replays=args.replays, max_jump_rate=args.max_jump_rate,
+        seeds=parse_seeds(args.seeds) if args.seeds else None,
+        replays=args.replays, init_seed=args.init_seed, max_jump_rate=args.max_jump_rate,
         dataset_label=os.path.abspath(args.dataset),
     )
     print(format_table(report))

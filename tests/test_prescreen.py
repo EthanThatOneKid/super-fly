@@ -37,6 +37,7 @@ from prescreen import (
     summarise_arm,
     untrained_model,
 )
+from seed_policy import DEV_ROLE, DEV_SEEDS, GATE_SEEDS
 from trajectory import iter_dataset, write_shard
 
 
@@ -166,13 +167,13 @@ class TestArmReporting(unittest.TestCase):
         return {"replay_seed": seed, "diffs": diffs, "labels": labels}
 
     def test_every_replay_is_reported_and_the_headline_is_their_mean(self):
-        rows = [self._replay(seed) for seed in (42, 43, 44)]
+        rows = [self._replay(seed) for seed in (45, 46, 47)]
 
         report = summarise_arm("candidate", rows, 0.35)
 
-        self.assertEqual([row["replay_seed"] for row in report["per_replay"]], [42, 43, 44])
+        self.assertEqual([row["replay_seed"] for row in report["per_replay"]], [45, 46, 47])
         self.assertEqual(report["replays"], 3)
-        self.assertEqual(report["replay_seeds"], [42, 43, 44])
+        self.assertEqual(report["replay_seeds"], [45, 46, 47])
         self.assertEqual(len(report["jump_recall"]["values"]), 3)
         self.assertEqual(
             report["jump_recall"]["values"],
@@ -184,7 +185,7 @@ class TestArmReporting(unittest.TestCase):
         )
 
     def test_the_pooled_view_is_reported_but_does_not_replace_the_per_replay_mean(self):
-        rows = [self._replay(seed) for seed in (42, 43, 44)]
+        rows = [self._replay(seed) for seed in (45, 46, 47)]
 
         report = summarise_arm("candidate", rows, 0.35)
 
@@ -194,7 +195,7 @@ class TestArmReporting(unittest.TestCase):
         self.assertNotIn(report["pooled"]["jump_recall"], (None, False))
 
     def test_the_shipped_margin_is_measured_next_to_the_budget_figure(self):
-        rows = [self._replay(seed) for seed in (42, 43)]
+        rows = [self._replay(seed) for seed in (45, 46)]
 
         report = summarise_arm("candidate", rows, 0.35, margin=99.0)
 
@@ -210,13 +211,13 @@ class TestArmReporting(unittest.TestCase):
 
     def test_calibration_records_the_replays_it_was_fitted_on(self):
         """The margin is only interpretable next to the measurement that produced it."""
-        rows = [self._replay(seed) for seed in (42, 43)]
+        rows = [self._replay(seed) for seed in (45, 46)]
 
         calibration = calibration_record(rows)
 
         self.assertEqual(calibration["method"], "balanced_accuracy")
         self.assertEqual(calibration["replays"], 2)
-        self.assertEqual(calibration["replay_seeds"], [42, 43])
+        self.assertEqual(calibration["replay_seeds"], [45, 46])
         self.assertEqual(calibration["decisions_per_replay"], 20)
         self.assertEqual(calibration["samples"], 40)
         with self.assertRaises(ValueError):
@@ -457,7 +458,7 @@ class TestPrescreenTable(unittest.TestCase):
 
             report = prescreen(
                 [Arm("candidate", untrained_model(seed=42))], tmpdir,
-                stride=1, settle_steps=1, seed=42, replays=2,
+                stride=1, settle_steps=1, seeds=(45, 46),
             )
 
             self.assertEqual([row["arm"] for row in report["table"]], [UNTRAINED_ARM, "candidate"])
@@ -490,10 +491,10 @@ class TestPrescreenTable(unittest.TestCase):
             shards = list(iter_dataset(tmpdir))
             model = untrained_model(seed=42)
 
-            first = collect_replays(model, shards, stride=1, settle_steps=1, seed=7, replays=2)
-            second = collect_replays(model, shards, stride=1, settle_steps=1, seed=7, replays=2)
+            first = collect_replays(model, shards, stride=1, settle_steps=1, seeds=(45, 46))
+            second = collect_replays(model, shards, stride=1, settle_steps=1, seeds=(45, 46))
 
-            self.assertEqual([row["replay_seed"] for row in first], [7, 8])
+            self.assertEqual([row["replay_seed"] for row in first], [45, 46])
             for left, right in zip(first, second):
                 self.assertEqual(left["diffs"], right["diffs"])
                 self.assertEqual(left["labels"], right["labels"])
@@ -506,8 +507,8 @@ class TestPrescreenTable(unittest.TestCase):
             self._shard(tmpdir)
             shards = list(iter_dataset(tmpdir))
 
-            left = collect_replays(untrained_model(seed=1), shards, 1, 1, 11, 1)[0]
-            right = collect_replays(untrained_model(seed=2), shards, 1, 1, 11, 1)[0]
+            left = collect_replays(untrained_model(seed=1), shards, 1, 1, (45,))[0]
+            right = collect_replays(untrained_model(seed=2), shards, 1, 1, (45,))[0]
 
             self.assertEqual(left["labels"], right["labels"])
             self.assertEqual(left["diffs"] != right["diffs"], True)
@@ -519,7 +520,7 @@ class TestPrescreenTable(unittest.TestCase):
 
             report = prescreen(
                 [Arm("candidate", untrained_model(seed=42))], tmpdir,
-                stride=1, settle_steps=1, seed=42, replays=2,
+                stride=1, settle_steps=1, seeds=(45, 46),
             )
             row = report["table"][1]
 
@@ -552,7 +553,7 @@ class TestPrescreenTable(unittest.TestCase):
 
             report = prescreen(
                 [Arm("candidate", untrained_model(seed=42))], tmpdir,
-                stride=1, settle_steps=1, seed=42, replays=2,
+                stride=1, settle_steps=1, seeds=(45, 46),
             )
 
             self.assertIsNone(report["table"][1]["jump_sequence_recall"]["mean"])
@@ -565,7 +566,7 @@ class TestPrescreenTable(unittest.TestCase):
             self._shard(tmpdir)
 
             report = arm_report(
-                Arm("candidate", untrained_model(seed=42), margin=99.0), tmpdir, 1, 1, 42, 2
+                Arm("candidate", untrained_model(seed=42), margin=99.0), tmpdir, 1, 1, (45, 46)
             )
 
             self.assertEqual(report["margin"], 99.0)
@@ -581,14 +582,15 @@ class TestPrescreenTable(unittest.TestCase):
 
             report = prescreen(
                 [Arm("candidate", untrained_model(seed=42), margin=0.0)], tmpdir,
-                stride=1, settle_steps=1, seed=42, replays=2,
+                stride=1, settle_steps=1, seeds=(45, 46),
             )
             text = format_table(report)
 
             self.assertIn(UNTRAINED_ARM, text)
             self.assertIn("candidate", text)
             self.assertIn("chance", text)
-            self.assertEqual(report["protocol"]["replay_seeds"], [42, 43])
+            self.assertEqual(report["protocol"]["replay_seeds"], [45, 46])
+            self.assertEqual(report["protocol"]["seed_role"], DEV_ROLE)
             self.assertEqual(report["protocol"]["stride"], 1)
             self.assertEqual(report["protocol"]["settle_steps"], 1)
             self.assertEqual(report["protocol"]["baseline"], UNTRAINED_ARM)
@@ -604,9 +606,40 @@ class TestPrescreenTable(unittest.TestCase):
             shards = list(iter_dataset(tmpdir))
 
             with self.assertRaises(ValueError):
-                collect_replays(untrained_model(seed=42), shards, 1, 1, 42, 0)
+                collect_replays(untrained_model(seed=42), shards, 1, 1, ())
             with self.assertRaises(ValueError):
                 prescreen([], tmpdir, stride=0, settle_steps=1, replays=1)
+
+    def test_the_default_seed_set_is_dev_and_says_so(self):
+        """A caller who did not name seeds is iterating, so it does not get the claim set."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._shard(tmpdir)
+
+            report = prescreen(
+                [Arm("candidate", untrained_model(seed=42))], tmpdir,
+                stride=1, settle_steps=1, replays=2,
+            )
+
+            self.assertEqual(report["protocol"]["replay_seeds"], list(DEV_SEEDS[:2]))
+            self.assertEqual(report["protocol"]["seed_role"], DEV_ROLE)
+            self.assertFalse(report["protocol"]["seeds"]["report_only"])
+            self.assertIn("tuning only", report["protocol"]["seeds"]["note"])
+            self.assertIn("tuning only", format_table(report))
+
+    def test_the_reserved_gate_seeds_are_refused(self):
+        """This instrument picks arms, and the arms in it were picked by reading it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._shard(tmpdir)
+            arm = Arm("candidate", untrained_model(seed=42))
+
+            with self.assertRaises(ValueError) as caught:
+                prescreen([arm], tmpdir, stride=1, settle_steps=1, seeds=GATE_SEEDS)
+
+            self.assertIn("tuning instrument", str(caught.exception))
+            # Nor half the reserved set, nor a set straddling the two ranges.
+            for straddle in ((42, 43), (42, 45), (44,)):
+                with self.assertRaises(ValueError):
+                    prescreen([arm], tmpdir, stride=1, settle_steps=1, seeds=straddle)
 
     def test_a_checkpoint_arm_runs_the_decoder_the_controller_would_run(self):
         """A pre-screened arm has to be the shipped one, not a rebuilt approximation."""
@@ -619,7 +652,7 @@ class TestPrescreenTable(unittest.TestCase):
             save_checkpoint(model, checkpoint, metadata)
 
             arm = arm_from_checkpoint("candidate", checkpoint)
-            report = prescreen([arm], tmpdir, stride=1, settle_steps=1, seed=42, replays=2)
+            report = prescreen([arm], tmpdir, stride=1, settle_steps=1, replays=2)
 
             self.assertEqual(arm.margin, metadata["jump_margin"])
             self.assertEqual(report["table"][1]["budget"]["margin"], metadata["jump_margin"])

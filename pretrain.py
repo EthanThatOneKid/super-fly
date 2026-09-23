@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -12,12 +12,20 @@ from macro_decoder import MAX_CHUNK_FRAMES
 from offline_episode import sequence_report
 from prescreen import (
     DEFAULT_MAX_JUMP_RATE,
-    DEFAULT_REPLAYS,
     Arm,
     arm_report,
     calibration_record,
     collect_replays,
     prescreen,
+)
+from seed_policy import (
+    DEFAULT_REPLAYS,
+    DEV_SEEDS,
+    GATE_SEEDS,
+    SeedSet,
+    assert_not_reserved,
+    parse_seeds,
+    resolve_seeds,
 )
 from simulation import DEFAULT_SAVE_PATH, MAX_SETTLE_STEPS, DEFAULT_SETTLE_STEPS
 from trajectory import dataset_provenance, iter_dataset
@@ -146,7 +154,8 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
                          calibration_replays: int = DEFAULT_CALIBRATION_REPLAYS,
                          visual_pathway: str = "frozen",
                          visual_lr: float | None = None,
-                         report_dataset_dir: str | None = None) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
+                         report_dataset_dir: str | None = None,
+                         eval_seeds: Optional[Sequence[int]] = None) -> Tuple[DrosophilaConnectomeSNN, Dict[str, object]]:
     """Supervised pretraining over trajectory shards.
 
     ``stride`` is the action cadence: one supervised target per cadence frames,
@@ -163,6 +172,12 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     ``report_dataset_dir`` adds a quality report on a dataset the weights never
     trained on, using the margin fitted on the training shards. One episode is one
     shard, so a held-out half has to be materialised first (``trajectory.slice_dataset``).
+
+    ``seed`` is the *initialization and training* seed -- the connectome the arm starts
+    from and the Poisson draws the updates see -- which is a different axis from the
+    ``eval_seeds`` the arm is then calibrated and pre-screened on. Those default to the dev
+    range and may not be the reserved gate set: fitting the jump margin on the seeds the
+    published claim is reported on would leak the claim back into the thing being claimed.
     """
     if epochs <= 0 or lr <= 0 or stride <= 0:
         raise ValueError("epochs, lr, and stride must be positive")
@@ -170,6 +185,14 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         raise ValueError(f"settle_steps must be between 1 and {MAX_SETTLE_STEPS}")
     if calibration_replays < 1:
         raise ValueError("calibration_replays must be at least 1")
+    # An explicit seed list defines the count; ``calibration_replays`` is the count used
+    # when the caller only said "a few".
+    eval_seed_set: SeedSet = resolve_seeds(
+        eval_seeds, None if eval_seeds is not None else calibration_replays
+    )
+    assert_not_reserved(
+        eval_seed_set.seeds, "calibrating the jump margin and pre-screening this arm"
+    )
     if visual_pathway not in VISUAL_PATHWAY_MODES:
         raise ValueError(f"visual_pathway must be one of {VISUAL_PATHWAY_MODES}")
     visual_lr_used = lr if visual_lr is None else float(visual_lr)
@@ -242,10 +265,10 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
     # readout is offset (run evidence dominates on both classes), so a hard-coded
     # zero margin reads as "never jump" and the controller cannot clear an obstacle.
     # Pooled replays are what make the boundary reflect expected evidence rather than
-    # one noisy draw; replay seeds are derived from ``seed`` and thus reproducible. The
-    # same replays then feed the pre-screen, so the arm is measured on exactly the
-    # evidence its margin was chosen from.
-    replays = collect_replays(model, shards, stride, settle_steps, seed, calibration_replays)
+    # one noisy draw. The same replays then feed the pre-screen, so the arm is measured
+    # on exactly the evidence its margin was chosen from -- which is why both run on the
+    # *dev* seeds: it is a fitted number, and the reserved set is report-only.
+    replays = collect_replays(model, shards, stride, settle_steps, eval_seed_set)
     calibration = calibration_record(replays)
     decoder_config = {
         "decoder": "bounded_macro_action",
@@ -266,6 +289,8 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         "action_cadence": stride,
         "settle_steps": settle_steps,
         "seed": seed,
+        "eval_seeds": list(eval_seed_set.seeds),
+        "eval_seed_role": eval_seed_set.role,
         "samples": total_samples,
         "updates": updates,
         "episode_boundary_resets": episode_boundary_resets,
@@ -304,14 +329,16 @@ def pretrain_motor_layer(dataset_dir: str, epochs: int = 3, lr: float = DEFAULT_
         shards,
         stride=stride,
         settle_steps=settle_steps,
-        seed=seed,
-        replays=calibration_replays,
+        seeds=eval_seed_set,
+        # The null arm has to be this arm's own initialization, or the paired delta is
+        # measured against a different network.
+        init_seed=seed,
         dataset_label=dataset_dir,
     )
     if report_dataset_dir is not None:
         metadata["held_out_decision_quality"] = _held_out_decision_quality(
             model, report_dataset_dir, report_env_kind, stride, settle_steps,
-            seed, calibration_replays, calibration["margin"], decoder_config,
+            eval_seed_set, calibration["margin"], decoder_config,
         )
     return model, metadata
 
@@ -334,7 +361,7 @@ def _require_matching_env_kind(train_dataset_dir: str, report_dataset_dir: str) 
 
 def _held_out_decision_quality(model: DrosophilaConnectomeSNN, report_dataset_dir: str,
                                env_kind: str | None, stride: int, settle_steps: int,
-                               seed: int, calibration_replays: int, margin: float,
+                               seeds: SeedSet, margin: float,
                                decoder_config: Dict[str, object]) -> Dict[str, object]:
     """Pre-screen report on a dataset the weights never trained on.
 
@@ -345,12 +372,12 @@ def _held_out_decision_quality(model: DrosophilaConnectomeSNN, report_dataset_di
     """
     shards = list(iter_dataset(report_dataset_dir))
     report = sequence_report(
-        "candidate", model, shards, stride, settle_steps, seed, calibration_replays,
+        "candidate", model, shards, stride, settle_steps, seeds,
         decoder_config=decoder_config, detail={"role": "held_out"},
     )
     report["budget"] = arm_report(
         Arm("candidate", model, margin=margin, decoder=decoder_config), shards,
-        stride, settle_steps, seed, calibration_replays, DEFAULT_MAX_JUMP_RATE,
+        stride, settle_steps, seeds, DEFAULT_MAX_JUMP_RATE,
     )
     return {"env_kind": env_kind, "dataset": dataset_provenance(report_dataset_dir), **report}
 
@@ -394,7 +421,15 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--settle-steps", type=int, default=DEFAULT_SETTLE_STEPS)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Initialization and training seed (weight init and update draws), "
+                             "not an evaluation seed")
+    parser.add_argument("--eval-seeds", default=None,
+                        help=f"Seeds the margin is calibrated on and the arm pre-screened on; "
+                             f"defaults to the dev range {list(DEV_SEEDS[:DEFAULT_REPLAYS])}. The "
+                             f"reserved gate seeds {list(GATE_SEEDS)} are refused")
+    parser.add_argument("--calibration-replays", type=int, default=DEFAULT_CALIBRATION_REPLAYS,
+                        help="How many dev seeds to spend on calibration and the pre-screen")
     parser.add_argument("--visual-pathway", choices=VISUAL_PATHWAY_MODES, default="frozen",
                         help="'frozen' fits only the motor readout; 'linear_feedback' trains the visual pathway too")
     parser.add_argument("--visual-lr", type=float, default=None,
@@ -404,8 +439,10 @@ def main() -> None:
     args = parser.parse_args()
     model, metadata = pretrain_motor_layer(
         args.dataset, args.epochs, args.lr, args.stride, args.settle_steps, args.seed,
+        calibration_replays=args.calibration_replays,
         visual_pathway=args.visual_pathway, visual_lr=args.visual_lr,
         report_dataset_dir=args.report_dataset,
+        eval_seeds=parse_seeds(args.eval_seeds) if args.eval_seeds else None,
     )
     save_checkpoint(model, args.output, metadata)
     calibration = metadata["decoder"]["calibration"]

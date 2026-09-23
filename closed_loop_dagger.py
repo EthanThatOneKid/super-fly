@@ -4,13 +4,19 @@ This script is the reproducible driver for the "next materially different
 experiment" toward model-only Level 1-1 completion:
 
 * ``--mode baseline`` records a deterministic model-only baseline for the
-  current checkpoint across the reserved seeds (42, 43, 44) with the same
-  horizon, settle window and action cadence used for candidates.
+  current checkpoint across the seed set in play with the same horizon, settle
+  window and action cadence used for candidates.
 * ``--mode dagger`` runs bounded DAgger rounds: model-only on-policy rollouts →
   divergence / unrecoverable recovery windows → aggregated teacher + rollout
   dataset → supervised motor-eligibility pretraining at the chunk cadence →
-  model-only evaluation on the reserved seeds, stopping early as soon as the
-  real completion detector fires without assistance.
+  model-only evaluation, stopping early as soon as the real completion detector
+  fires without assistance.
+
+Seeds are split by role (``seed_policy``): rounds **iterate** on the dev seeds by
+default, and the reserved gate set (42, 43, 44) is the *only* set on which ``p0_gate_met``
+can be true. Rounds are tuned by reading their round-by-round scores, so a run that tuned
+on the reserved seeds would be reporting its own selection criterion as evidence; pass
+``--eval-seeds 42,43,44`` to make the claim, and the report records which role it used.
 
 Provenance is written next to every result: ROM and checkpoint checksums, git
 commit, seeds, horizon, settle steps, action cadence, dataset shard checksums and
@@ -47,6 +53,16 @@ from dagger import (
 from eval_harness import evaluate_policy
 from offline_env import OfflineMarioEnv
 from pretrain import pretrain_motor_layer, save_checkpoint
+from seed_policy import (
+    DEFAULT_REPLAYS,
+    DEV_ROLE,
+    DEV_SEEDS,
+    GATE_ROLE,
+    GATE_SEEDS,
+    describe as describe_seeds,
+    parse_seeds,
+    resolve_seeds,
+)
 from simulation import (
     DEFAULT_ACTION_CADENCE,
     DEFAULT_MAX_STEPS,
@@ -61,7 +77,11 @@ from trajectory import dataset_provenance
 
 #: Current measured mainline temporal-decoder baseline recorded in issue #30.
 BASELINE_REFERENCE_BEST_X = 594.0
-RESERVED_SEEDS = "42,43,44"
+#: The reserved gate set, spelled for the CLI. Only these can meet ``p0_gate_met``.
+RESERVED_SEEDS = ",".join(str(seed) for seed in GATE_SEEDS)
+#: Where rounds iterate: the head of the dev range. A round measured here is a tuning
+#: reading, and the report says so rather than leaving the reader to check the numbers.
+DEFAULT_EVAL_SEEDS = ",".join(str(seed) for seed in DEV_SEEDS[:DEFAULT_REPLAYS])
 DEFAULT_TRAIN_SEEDS = "0,1,2"
 OFFLINE_ENV_KIND = "offline_synthetic"
 
@@ -79,7 +99,7 @@ def build_env_factory(offline: bool, rom_path: str):
 
 
 def evaluate_over_seeds(env_factory, env_kind, checkpoint, seeds, episodes, max_steps, settle_steps,
-                        action_cadence, policy, states, rom_path=None):
+                        action_cadence, policy, states, rom_path=None, seed_role=None):
     """Model-only evaluation of one checkpoint across the requested seeds."""
     per_seed = []
     for seed in seeds:
@@ -107,6 +127,9 @@ def evaluate_over_seeds(env_factory, env_kind, checkpoint, seeds, episodes, max_
     return {
         "policy": policy,
         "seeds": list(seeds),
+        # The role travels with the evaluation, because the P0 gate is defined on the
+        # reserved set and a completion observed anywhere else is a tuning reading.
+        "seed_role": seed_role,
         "episodes_per_seed": episodes,
         "horizon": max_steps,
         "settle_steps": settle_steps,
@@ -128,7 +151,15 @@ def evaluate_over_seeds(env_factory, env_kind, checkpoint, seeds, episodes, max_
 
 
 def baseline_verdict(evaluation, baseline_x: float = BASELINE_REFERENCE_BEST_X):
-    """Compare a model-only evaluation against the issue #30 baseline."""
+    """Compare a model-only evaluation against the issue #30 baseline.
+
+    The P0 gate needs a real environment *and* the reserved seed set. A completion seen on
+    the dev seeds is real evidence about an arm, but the rounds that produced it were chosen
+    by reading those very numbers, so it cannot carry the claim -- it has to be re-measured
+    on the reserved set, which is what ``p0_gate_met`` requires and ``claim_eligible`` names.
+    """
+    role = evaluation.get("seed_role")
+    gate_eligible_seeds = role == GATE_ROLE
     return {
         "baseline_best_x": baseline_x,
         "baseline_source": "issue #30 measured mainline temporal-decoder baseline",
@@ -137,10 +168,13 @@ def baseline_verdict(evaluation, baseline_x: float = BASELINE_REFERENCE_BEST_X):
         "completion_rate": evaluation["completion_rate"],
         "improved_completion_behavior": bool(evaluation["completion_rate"] > 0.0),
         "model_only": evaluation["model_only"],
+        "seed_role": role,
+        "claim_eligible": bool(gate_eligible_seeds and evaluation["env_kind"] != OFFLINE_ENV_KIND),
         "p0_gate_met": bool(
             evaluation["model_only"]
             and evaluation["completion_rate"] > 0.0
             and evaluation["env_kind"] != OFFLINE_ENV_KIND
+            and gate_eligible_seeds
         ),
     }
 
@@ -224,6 +258,7 @@ def run_iteration(iteration, checkpoint, teacher_dataset, labeler, env_factory, 
         config["policy"],
         config["states"],
         rom_path=config["rom"],
+        seed_role=config["eval_seed_role"],
     )
 
     return {
@@ -297,10 +332,6 @@ def check_teacher_env_kind(teacher_info, env_kind):
         )
 
 
-def parse_seeds(value):
-    return [int(token.strip()) for token in value.split(",") if token.strip()]
-
-
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Closed-loop DAgger + macro-action experiment runner (issue #30)")
     parser.add_argument("--mode", choices=("baseline", "dagger"), default="dagger")
@@ -315,7 +346,13 @@ def build_arg_parser():
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Evaluation horizon per episode")
     parser.add_argument("--rollout-steps", type=int, default=1000, help="On-policy DAgger rollout horizon")
     parser.add_argument("--train-seeds", default=DEFAULT_TRAIN_SEEDS, help="Seeds for on-policy DAgger rollouts")
-    parser.add_argument("--eval-seeds", default=RESERVED_SEEDS, help="Reserved seeds for model-only evaluation")
+    parser.add_argument("--eval-seeds", default=DEFAULT_EVAL_SEEDS,
+                        help=f"Seeds for model-only evaluation (default {DEFAULT_EVAL_SEEDS}, the dev "
+                             f"range). Pass the whole reserved set {RESERVED_SEEDS} to make the P0 claim; "
+                             "a set straddling the two is refused")
+    parser.add_argument("--seed-role", choices=(DEV_ROLE, GATE_ROLE), default=None,
+                        help="Assert the role of --eval-seeds; inferred from the seeds themselves, "
+                             "and a mismatch is an error rather than a label")
     parser.add_argument("--settle-steps", type=int, default=DEFAULT_SETTLE_STEPS, help="Bounded settle window per frame")
     parser.add_argument("--action-cadence", type=int, default=DEFAULT_ACTION_CADENCE, help="Frames per macro-action chunk")
     parser.add_argument("--label-matching", choices=("phase", "position_only"), default="phase",
@@ -348,9 +385,10 @@ def _write_markdown_report(report, path):
             "- teacher labelling audit: no phase contrast in this shard"
         ),
         f"- model-only policy: `{report['config']['policy']}`",
-        f"- reserved seeds: {report['config']['eval_seeds']}",
+        f"- evaluation seeds: {report['config']['eval_seeds']} -- {report['config']['eval_seeds_note']}",
         f"- settle steps: {report['config']['settle_steps']}, action cadence: {report['config']['action_cadence']}",
         f"- gate eligible environment: {report['verdict']['gate_eligible_env']}",
+        f"- claim eligible (real ROM on the reserved seeds): {report['verdict']['claim_eligible']}",
         f"- P0 gate met: {report['verdict']['p0_gate_met']}",
         f"- stop reason: `{report['verdict']['stop_reason']}`",
         "",
@@ -380,14 +418,19 @@ def _write_markdown_report(report, path):
 
 def build_report(args):
     """Execute the requested mode and assemble the reproducible report."""
+    # One set, one role, and no straddling: the rounds are tuned by reading their scores,
+    # so a run cannot half-use the seeds the claim is reported on.
+    eval_seed_set = resolve_seeds(parse_seeds(args.eval_seeds), role=args.seed_role)
     config = {
         "policy": args.policy,
         "iterations": args.iterations,
         "settle_steps": args.settle_steps,
         "action_cadence": args.action_cadence,
         "states": [s.strip() for s in args.states.split(",") if s.strip()] or ["Level1-1"],
-        "train_seeds": parse_seeds(args.train_seeds),
-        "eval_seeds": parse_seeds(args.eval_seeds),
+        "train_seeds": list(parse_seeds(args.train_seeds)),
+        "eval_seeds": list(eval_seed_set.seeds),
+        "eval_seed_role": eval_seed_set.role,
+        "eval_seeds_note": describe_seeds(eval_seed_set),
         "episodes": args.episodes,
         "max_steps": args.max_steps,
         "rollout_steps": args.rollout_steps,
@@ -437,6 +480,7 @@ def build_report(args):
         config["policy"],
         config["states"],
         rom_path=config["rom"],
+        seed_role=config["eval_seed_role"],
     )
 
     iterations = []

@@ -64,6 +64,7 @@ from connectome import DrosophilaConnectomeSNN
 from dagger import is_airborne_from_ram
 from macro_decoder import MacroActionDecoder
 from ram_tracker import LEVEL_END_MIN_X, MarioRAMTracker
+from seed_policy import SeedSet, resolve_seeds
 from vision import OmmatidiaVisionPreprocessor
 
 #: NES player vertical state (0x001D): 0 on the ground, 1 rising, 2 falling.
@@ -273,22 +274,25 @@ def _spread(values: Sequence[Optional[float]]) -> Dict[str, object]:
 
 
 def sequence_report(name: str, model: DrosophilaConnectomeSNN, shards: Sequence[dict],
-                    cadence: int, settle_steps: int, seed: int, replays: int = 3,
+                    cadence: int, settle_steps: int, seeds,
                     decoder_config: Optional[Dict[str, object]] = None,
                     traces: Optional[Sequence[Dict[str, object]]] = None,
                     detail: Optional[Dict[str, object]] = None,
                     preprocessor: Optional[OmmatidiaVisionPreprocessor] = None) -> Dict[str, object]:
-    """Sequential outcomes for one arm, per replay, plus the teacher it was scored against."""
-    if replays < 1:
-        raise ValueError("replays must be at least 1")
+    """Sequential outcomes for one arm, per replay, plus the teacher it was scored against.
+
+    ``seeds`` is a :class:`~seed_policy.SeedSet` or anything ``resolve_seeds`` accepts; the
+    set carries the role it is allowed to play into the report, so a reader can tell a
+    tuning measurement from one that was reported on the reserved set.
+    """
     if not shards:
         raise ValueError("a sequence report needs at least one shard")
+    seed_set = seeds if isinstance(seeds, SeedSet) else resolve_seeds(seeds)
     traces = list(traces) if traces is not None else teacher_traces(shards, cadence)
 
     required_jumps = sum(len(trace["required"]) for trace in traces)
     per_replay: List[Dict[str, object]] = []
-    for replay in range(replays):
-        replay_seed = seed + replay
+    for replay_seed in seed_set.seeds:
         episodes = replay_sequence(
             model, shards, traces, cadence, settle_steps, replay_seed, decoder_config, preprocessor
         )
@@ -318,8 +322,9 @@ def sequence_report(name: str, model: DrosophilaConnectomeSNN, shards: Sequence[
     return {
         "arm": name,
         "metric": "teacher_forced_sequence",
-        "replays": replays,
+        "replays": len(per_replay),
         "replay_seeds": [row["replay_seed"] for row in per_replay],
+        "seed_role": seed_set.role,
         "cadence": cadence,
         "settle_steps": settle_steps,
         "decoder": dict(decoder_config or {}),
@@ -330,7 +335,7 @@ def sequence_report(name: str, model: DrosophilaConnectomeSNN, shards: Sequence[
         # meaningful once jump recall is high enough for a run to survive its first miss.
         "offline_best_x": _spread([row["offline_best_x"] for row in per_replay]),
         "offline_completion_rate": round(
-            sum(1 for row in per_replay if row["offline_completion"]) / replays, 4
+            sum(1 for row in per_replay if row["offline_completion"]) / len(per_replay), 4
         ),
         "missed_jumps": _spread([row["missed_jumps"] for row in per_replay]),
         "spurious_jumps": _spread([row["spurious_jumps"] for row in per_replay]),
