@@ -318,55 +318,123 @@ invariants (rows re-centred, weights clamped to ±3), and `weight_deltas` record
 each layer actually moved, so a mode that leaves the pathway at its initialization is
 visible rather than assumed.
 
-**The measurement does not move.** Teacher shard, one decision per 15-frame chunk, 3 pooled
-Poisson replays, seeds 42/43/44:
+### The pre-screen: how an arm earns an emulator run (issue #30)
 
-| arm | settle 3 | settle 5 | separation (`d`) |
-| --- | --- | --- | --- |
-| untrained (initialization heuristic) | 0.521 | 0.536 | -0.01 / 0.03 |
-| `frozen`, 3 epochs | 0.541 | 0.579 | 0.08 / 0.30 |
-| `linear_feedback` @5e-4 | 0.522 | – | – |
-| `linear_feedback` @2e-3 | 0.531 | 0.500 | 0.04 / -0.05 |
-| `linear_feedback` @1e-2 | 0.540 | – | – |
+`prescreen.py` decides whether an arm is worth an emulator run, and it fits nothing. The default
+measurement replays the **teacher's frames in order** with the same decoder the closed loop
+drives (`offline_episode.py`): the settle window, the SNN's recurrent state, the decoder's chunk
+commitment and its refractory period all evolve as they do in a real episode, and the question
+is no longer "how many chunks does it classify correctly" but "how many of the teacher's jumps
+does it take, in sequence". Every table still carries an **untrained** arm built from the same
+initialization, and every arm is reported per replay and paired against that baseline on the
+shared replay seed.
 
-The epochs-3 readout reaches 0.54-0.58, **not** the 0.66-0.70 quoted here earlier; that
-figure is reproducible only with more training (0.642 at 10 epochs, settle 10; 0.626-0.670
-at 30 epochs). Every arm above sits in the same 0.50-0.58 band as an **untrained** model, so
-the metric cannot currently tell learning from the initialization heuristic. Three more
-measurements agree:
+Two statistics come out of one replay, and they answer different questions:
 
-* The companion metric is worse than a trivial policy: `motor_argmax_accuracy` never beats
-  always choosing `run` (0.748) in any arm tested, across every settle window and epoch
-  count measured (0.46-0.71).
-* Pooling `replays` does not average out noise, because each replay is a separate trajectory
-  of a chaotic spiking network, not a resample of one. The same frozen model reads balanced
-  accuracy 0.64 / `d` 0.62 on a single replay and 0.51 / `d` 0.06 pooled over three.
-* Replaying all 1,477 frames and reading a decision at each cadence point, instead of
-  striding frames by the cadence so the SNN sees one frame in fifteen, also leaves all three
-  models at chance (balanced accuracy 0.51-0.53). The near-chance result is not a striding
-  artefact.
+* **`jump_sequence_recall`** -- of the jumps the teacher actually took, how many the controller
+took. Teacher-forced, so a miss does not stop later jumps from being counted, which keeps it
+informative at the competence levels where a first-miss statistic has saturated. This is the
+gate's progress measure.
+* **`offline_best_x` / `offline_completion`** -- the compounded episode under a *pessimistic*
+  fatality model ("any missed teacher jump ends the run"): where the run dies, and whether it
+gets to the flagpole. Reported and **not** gated on, for the reasons below.
+
+Real teacher shard, 20 required jumps over 1,477 frames (98 decisions), 3 replays (seeds
+42/43/44), cadence 15, settle 5. `emulator best_x` is the closed-loop score the *same
+checkpoint* produced on the ROM:
+
+| arm | jump recall | per replay | jumps taken | spurious | jump rate | `best_x` (pessimistic) | per replay | emulator `best_x` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| untrained | 0.733 | 0.60 / 0.70 / 0.90 | 14.7 | 11.7 | 0.266 | 899 | 249 / 249 / 2200 | 898 |
+| DAgger round 1 (readout only, 30 epochs) | 0.817 | 0.75 / 0.85 / 0.85 | 16.3 | 11.7 | 0.283 | 374 | 249 / 249 / 624 | **1247** |
+| DAgger round 2 (continued from round 1) | 0.850 | 0.85 / 0.75 / 0.95 | 17.0 | 12.0 | 0.293 | 712 | 249 / 249 / 1638 | 899 |
+| visual pathway @2e-3, 30 epochs | **1.000** | 1.00 / 1.00 / 1.00 | 20.0 | **29.0** | **0.495** | 3243 | 3243 ×3 | not run |
+
+Read honestly:
+
+* **The sequence view separates the arms, and still does not rank them like the emulator.** Jump
+  recall climbs 0.733 (untrained) → 0.817 → 0.850, with the ceiling effect gone -- and round 2
+  still beats round 1 on recall, on consistency against the untrained baseline (3/3 seeds vs
+  2/3) and on `best_x` (712 vs 374), while its emulator `best_x` is the *worse* one (899 vs
+  1247). Two offline views have now failed to reproduce that ordering, and the second failure is
+  not a scoring artefact: the decisions here really are made in sequence. **Teacher forcing is
+  the limit** -- the arm's own trajectory never exists in the replay, so nothing models the
+  state its decisions would create, and the emulator's ordering is about dynamics, not decisions.
+* **`offline_best_x` saturates and is high-variance**: 249 / 249 / 2200 for the untrained arm,
+  249 / 249 / 624 for round 1. With ~20 required jumps and a per-jump success rate below ~0.9,
+  the first miss lands early for every weak arm. That is why it is reported and not gated on.
+* **The visual-pathway arm "completes" the level offline -- and it is not a learner.** Recall
+  1.000, completion 1.00 on all three replays, reaching the teacher's max_x. Its calibration
+  degenerated to "jump on everything", so it spends **49.5%** of its decisions jumping, 29 of
+  them spurious. Covering the teacher's 20 jumps inside a 35% budget needs at least 20 of ~34
+  jumps on target; jumping constantly is not a strategy this replay can punish, because the
+  model's own airborne state is never simulated.
+* **The rate budget closes that hole, and it is the only criterion that does.** All five gate
+  criteria hold for the visual-pathway arm *except* `jump_rate_within_budget` (0.495 vs 0.35).
+  Round 2 fails only completion and the 0.90 recall floor (0.850); round 1 fails four of five
+  (completion, recall 0.817, paired gain +0.083, and consistency at 2/3 seeds). **No arm passes,
+  and the report says which way each one is wrong** -- which is the useful outcome: no emulator
+  run is justified yet, and the two arms that look best offline are best for different reasons,
+  one of which is a defect.
+* The per-replay spread (round 1: 0.62 → 0.90 on the recall scale, 0.249 → 0.624 on `best_x`) is
+  **larger than any arm's paired gain**, which is why the verdict demands that every replay
+  improve and not just the mean.
+
+**Two measurements this replaced, for the record.** *Calibrated balanced accuracy* pooled over
+replays refitted the decision boundary on the evidence it then scored; at 3 epochs it read
+0.54-0.58 for a trained readout against 0.52-0.54 for an untrained one, so it could not separate
+learning from the initialization heuristic, and on round 2 it *rose* (0.57 → 0.66) while the
+closed-loop score fell (1247 → 899). *Jump-chunk recall at a bounded jump rate* fixed the
+fitting and the pooling, and was then replaced because it scored one decision at a time from a
+cold state; its numbers are still reported under `budget` in every pre-screen (untrained 0.333,
+round 1 0.413, round 2 0.427, visual pathway 0.280, chance 0.343), and it is the view that
+correctly rated the visual-pathway arm lowest. Balanced accuracy survives only as the *margin
+chooser* for the shipped decoder (`calibrate_jump_margin`), which is validated closed-loop
+(313 → 1247).
 
 **What the visual pathway does do**, on the same shard: it raises the uncalibrated per-chunk
-argmax accuracy monotonically with its learning rate (0.548 frozen -> 0.600 / 0.632 / 0.654
-at 5e-4 / 2e-3 / 1e-2), so the features are genuinely being learned. It also adds a failure
-mode: the trained visual layers raise the readout's drive until the evidence counted over a
-settle window saturates at the window length (both chunk classes read exactly `-5.0` at
-settle 5, or `10.0` at settle 10) and the decision collapses to always-run. That is the
-zero-jump failure that cost the earlier round, and it happens on all three seeds at
-2e-3 / settle 5.
+argmax accuracy monotonically with its learning rate (0.548 frozen → 0.600 / 0.632 / 0.654 at
+5e-4 / 2e-3 / 1e-2) and it moves the layers (relative `weight_deltas` 10x / 34x / 114x for
+`layer3_4` / `layer2_3` / `layer1_2`), so features are genuinely being learned. What it does not
+do is reach a decision the controller can use: at settle 5 the trained layers saturate the
+readout's drive until the evidence stops separating the two chunk classes, so the decision
+degenerates -- at 3 epochs as a collapse to always-run, and at 30 epochs as a calibration that
+cannot separate the classes at all and therefore jumps on everything.
 
-**Conclusion: no emulator run for this arm yet.** The mechanism works, but the metric meant
-to gate the run reads the same for an untrained model, a trained readout and a visual-pathway
-model, so it can support no claim in either direction. Fixing the measurement comes first:
-report per-replay decisions across several model seeds, and require jump-chunk recall at a
-bounded jump rate instead of threshold-optimal accuracy on ~100 decisions.
+**Defects this work exposed, both fixed:**
 
-Reproduce the arm and its report (no emulator):
+* **An inseparable readout published an always-jump decoder.** When no boundary beats the two
+  constant rules the calibration ties, and the tie was broken toward the lowest candidate:
+  `-math.inf`, i.e. jump on every decision. The 30-epoch visual-pathway arm hits this, and an
+  infinite margin also serialized into the checkpoint as `Infinity`, which is not valid JSON.
+  Candidate boundaries are now finite sentinels, and a calibration that cannot separate the
+  classes reports `degenerate: true` with the reason next to `jump_rate: 1.0`.
+* **A sequence metric that an always-jump policy can win**, caught only because a real checkpoint
+  was run through it: covering every stretch of teacher flight scores a perfect recall and a
+  completion. The gate now spends a jump budget to close it (see above).
+
+Reproduce the table, with no emulator and no training for the readout arms. The sequential
+replay costs about 30 s per arm-replay at settle 5 (1,477 frames × 5 forward passes), which is
+~15× the budget view it sits next to:
 
 ```bash
-python pretrain.py --dataset data/teacher_rom --stride 15 --settle-steps 3 --seed 42 \
+python prescreen.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --seed 42 --replays 3 \
+  --checkpoint round1=runs/closed_loop_dagger/iter-01/checkpoint.pth \
+  --checkpoint round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth \
+  --output runs/prescreen/sequence_table.json
+```
+
+Every `pretrain.py` run assembles the same table -- candidate plus untrained baseline, paired,
+with the verdict -- and records it as `metadata["prescreen"]` and under
+`pretraining.prescreen` in each closed-loop round report, so a round always carries the offline
+measurement that justified it. `prescreen.py` builds each arm from its checkpoint with the
+margin that checkpoint actually ships (`policy_config.macro_decoder.jump_margin`), so a
+pre-screened arm is the decoder the controller would run:
+
+```bash
+python pretrain.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --epochs 30 --seed 42 \
   --visual-pathway linear_feedback --visual-lr 0.002 \
-  --report-dataset <held-out tail dataset> --output runs/visual_pathway/checkpoint.pth
+  --report-dataset <held-out tail dataset> --output runs/prescreen/feedback.pth
 ```
 
 `data/` (teacher shards) and `runs/` (reports, checkpoints, aggregated datasets) are
