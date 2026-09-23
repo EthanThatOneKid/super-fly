@@ -12,10 +12,18 @@
 # What it needs to find on the runner: the teacher shard, and the checkpoints a cell names.
 # The shard is *generated*, not shipped: it is a deterministic function of the ROM, which is
 # tracked, so a cell whose dataset path is empty regenerates it with the emulator first. The
-# checkpoints are the only thing a runner has to be given; a dispatch with none runs the
+# checkpoints are the only thing a runner has to be given; a cell that asks for none runs the
 # untrained baseline alone, which is a legitimate probe of everything except checkpoint loading.
 # The pre-screen path itself imports without `stable_retro`, so the emulator is installed only
 # when a shard has to be regenerated.
+#
+# Checkpoints are declared *per cell*, not only globally, because what a cell needs is a property
+# of the cell: a sweep that runs the untrained baseline beside two trained arms should not be
+# blocked on data only one of them reads. A cell takes its own space-separated `checkpoints`
+# list, falling back to the `checkpoints` input; the literal `none` in a cell means "this cell
+# trains nothing and reads no checkpoint", which an empty string cannot express because it falls
+# back to the input's default. The preflight then requires exactly that cell's data, before the
+# install rather than after it.
 #
 # `reference` turns the sweep into a gate: point it at a table (or a directory of tables) that
 # holds the numbers a claim was published on, and the run fails when a metric moves further than
@@ -24,8 +32,13 @@
 # `tolerance` at 0 -- a clean result licenses every later cross-host number, and a dirty one is
 # itself the finding.
 #
-# The ROM is never touched here: it is needed only to *generate* a teacher shard and to run the
-# emulator, and this workflow does neither.
+# The ROM is never read here: it is needed only to *generate* a teacher shard, and the generation
+# is the emulator's job, not this workflow's.
+#
+# A reference comparison is anchored to the shard's SHA-256, and that hash is of the shard file's
+# *bytes*. So one cross-host difference has nothing to do with the numbers being checked -- a
+# dataset rebuilt on a differently-built numpy or zlib hashes differently even when the arrays
+# inside are identical -- and it is named before the run rather than reported as drift after it.
 
 name: Pre-screen sweep
 
@@ -36,8 +49,10 @@ on:
         description: >-
           JSON array of sweep cells. Each element is an object with an `id` (required, used as
           the artifact name) and any of `rule`, `decay`, `settle_steps`, `stride`, `replays`,
-          `seeds`. Example: [{"id":"spike","rule":"spike_sum"},{"id":"drive","rule":"drive_sum"},
-          {"id":"settle10","rule":"spike_sum","settle_steps":10}]
+          `seeds`, `checkpoints`. An optional per-cell `checkpoints` is a space-separated
+          NAME=PATH list; `none` runs the untrained baseline only. Example:
+          [{"id":"spike","rule":"spike_sum"},{"id":"drive","rule":"drive_sum"},
+          {"id":"baseline","checkpoints":"none"}]
         required: true
         type: string
       checkpoints:
@@ -138,8 +153,9 @@ jobs:
         id: preflight
         shell: bash
         env:
+          CELL: ${{ matrix.id }}
           DATASET: ${{ inputs.dataset }}
-          CHECKPOINTS: ${{ inputs.checkpoints }}
+          CHECKPOINTS: ${{ matrix.checkpoints || inputs.checkpoints }}
           ROM: ${{ inputs.rom }}
         run: |
           missing=0
@@ -149,15 +165,22 @@ jobs:
               missing=1
             fi
           }
-          # A cell with no checkpoint runs the untrained baseline only -- which is a legitimate
-          # and cheap probe of the whole rest of the pipeline, so it is said out loud rather
-          # than passed over.
-          if [ -z "$CHECKPOINTS" ]; then
-            echo "no checkpoints given: every cell runs the untrained baseline only"
+          # Only this cell's checkpoints are required: a cell that reads none must not be held
+          # up by data another cell in the same sweep needs. `none` is the explicit empty list,
+          # since an empty string falls back to the defaulted input.
+          specs=""
+          if [ "${CHECKPOINTS:-none}" != "none" ]; then specs="$CHECKPOINTS"; fi
+          if [ -z "$specs" ]; then
+            # A legitimate and cheap probe of the whole rest of the pipeline, so it is said out
+            # loud rather than passed over.
+            echo "cell $CELL reads no checkpoint: it runs the untrained baseline only"
           fi
-          for spec in $CHECKPOINTS; do
+          for spec in $specs; do
             # NAME=PATH, so the path is what has to exist.
-            check "${spec#*=}"
+            case "$spec" in
+              *=*) check "${spec#*=}" ;;
+              *) echo "::error::checkpoint $spec in cell $CELL is not NAME=PATH"; missing=1 ;;
+            esac
           done
           if [ -e "$DATASET" ]; then
             echo "teacher shard present at $DATASET"
@@ -235,6 +258,45 @@ jobs:
               print(f"  {shard.get('path')}: {shard.get('samples')} samples, sha256 {shard.get('sha256')}")
           PY
 
+      - name: Check the shard against the reference before running anything
+        # Rows are matched on the shard's SHA-256, and that hash is of the file's *bytes*, so a
+        # dataset regenerated on a differently-built numpy/zlib hashes differently even when the
+        # arrays inside are identical. That failure mode and a genuine float difference look the
+        # same from `sweep.py` ("nothing compared") and differ in what they mean, so it is worth
+        # naming here, before a run rather than after one.
+        if: inputs.reference != ''
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+          REFERENCE: ${{ inputs.reference }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          from trajectory import dataset_provenance
+
+          reference = pathlib.Path(os.environ["REFERENCE"])
+          paths = sorted(reference.glob("*.json")) if reference.is_dir() else [reference]
+          expected = {
+              shard["sha256"]
+              for path in paths
+              for table in [json.loads(path.read_text(encoding="utf-8"))]
+              for shard in table.get("protocol", {}).get("dataset_provenance", {}).get("shards", [])
+          }
+          current = {shard["sha256"] for shard in dataset_provenance(os.environ["DATASET"]).get("shards", [])}
+          print(f"reference shards: {sorted(expected) or 'none recorded'}")
+          print(f"this run's shards: {sorted(current)}")
+          if expected and not (expected & current):
+              raise SystemExit(
+                  "::error::the dataset shares no shard with the reference, so no row can be "
+                  "matched and the comparison would address nothing. If the arrays are the same "
+                  "and only the npz bytes differ, the reference has to be regenerated on this "
+                  "host; if the arrays differ, the teacher generation itself is not reproducible."
+              )
+          PY
+
       - name: Run the cell
         shell: bash
         env:
@@ -246,14 +308,21 @@ jobs:
           REPLAYS: ${{ matrix.replays || inputs.replays }}
           SEEDS: ${{ matrix.seeds || inputs.seeds }}
           DATASET: ${{ inputs.dataset }}
-          CHECKPOINTS: ${{ inputs.checkpoints }}
+          CHECKPOINTS: ${{ matrix.checkpoints || inputs.checkpoints }}
         run: |
+          # `--output` is what makes the cell a *product*: without it `prescreen.py` reports to
+          # stdout only, and a sweep whose cells write no table has nothing to merge, no matter how
+          # well each one ran. The name is the cell id, which is also the artifact name and the key
+          # the "no table" check below uses.
           args=(--dataset "$DATASET" --stride "$STRIDE" --settle-steps "$SETTLE" --replays "$REPLAYS")
           if [ -n "$RULE" ]; then args+=(--evidence-rule "$RULE"); fi
           if [ -n "$DECAY" ]; then args+=(--evidence-decay "$DECAY"); fi
           if [ -n "$SEEDS" ]; then args+=(--seeds "$SEEDS"); fi
-          for spec in $CHECKPOINTS; do args+=(--checkpoint "$spec"); done
+          specs=""
+          if [ "${CHECKPOINTS:-none}" != "none" ]; then specs="$CHECKPOINTS"; fi
+          for spec in $specs; do args+=(--checkpoint "$spec"); done
           mkdir -p runs/prescreen
+          args+=(--output "runs/prescreen/$CELL_ID.json")
           echo "prescreen.py ${args[*]}"
           python -u prescreen.py "${args[@]}" 2>&1 | tee "runs/prescreen/$CELL_ID.log"
 
@@ -265,7 +334,10 @@ jobs:
           path: |
             runs/prescreen/${{ matrix.id }}.json
             runs/prescreen/${{ matrix.id }}.log
-          if-no-files-found: warn
+          # A cell that ran and wrote no table is a red job, not a green one with a warning: the
+          # table is the product, and a merge that silently loses a cell is the failure this
+          # workflow exists to prevent.
+          if-no-files-found: error
           retention-days: 14
 
   aggregate:
