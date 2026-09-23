@@ -21,6 +21,7 @@ from sweep import (
     load_table,
     main,
     render,
+    row_key,
     shard_checksums,
     statistic_of,
 )
@@ -142,11 +143,26 @@ class TestCellKeys(unittest.TestCase):
         self.assertNotEqual(dev[0]["cell_key"], gate[0]["cell_key"])
         self.assertEqual(gate[0]["seed_role"], "gate")
 
-    def test_two_per_arm_runs_that_carried_different_rules_are_different_cells(self):
+    def test_two_per_arm_runs_that_carried_different_rules_are_different_rows(self):
+        """Same protocol and same arm name, different statistic: not the same measurement."""
         spike = flatten([table([arm_row("round1", 0.84, rule="spike_sum", decay=0.25)])])
         drive = flatten([table([arm_row("round1", 0.54, rule="drive_leaky_recency", decay=0.25)])])
 
-        self.assertNotEqual(spike[0]["cell_key"], drive[0]["cell_key"])
+        self.assertEqual(spike[0]["cell_key"], drive[0]["cell_key"])
+        self.assertNotEqual(row_key(spike[0]), row_key(drive[0]))
+
+    def test_the_arm_set_is_not_part_of_a_row_key(self):
+        """A partial run is comparable with the rows it does share.
+
+        This is what makes a baseline-only dispatch usable as a reproduce check against a
+        published table that also carries checkpoints. The statistic is in the key, so the
+        shortcut cannot confuse an arm measured one way with the same arm measured another.
+        """
+        partial = flatten([table([arm_row("untrained", 0.66)], override=override("spike_sum"))])
+        whole = flatten([table([arm_row("untrained", 0.66), arm_row("round1", 0.84)],
+                               override=override("spike_sum"))])
+
+        self.assertEqual(row_key(partial[0]), row_key(whole[0]))
 
 
 class TestFlatten(unittest.TestCase):
@@ -263,13 +279,41 @@ class TestDrift(unittest.TestCase):
         self.assertTrue(report["ok"])
         self.assertEqual([entry["arm"] for entry in report["missing"]], ["round1"])
 
-    def test_a_cell_the_reference_does_not_contain_is_reported_as_extra(self):
+    def test_a_sweep_the_reference_cannot_address_is_not_a_pass(self):
+        """Nothing compared is not a clean sweep, it is an unchecked one.
+
+        The usual cause is that the data differs, since the shard checksum is part of the key,
+        and reporting that as a pass is the silent failure every other guard here prevents.
+        """
         report = compare(self._cell(0.84, override_rule="drive_sum"), self._cell(0.84),
                          tolerance=0.01)
 
-        self.assertTrue(report["ok"])
-        self.assertEqual(len(report["extra"]), 2)
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["unaddressed"])
         self.assertEqual(report["compared"], 0)
+        self.assertIn("shard checksums", report["reason"])
+        self.assertNotEqual(report["reference_data"], report["current_data"])
+
+    def test_a_row_the_reference_does_not_contain_is_reported_as_extra(self):
+        reference = self._cell(0.84)
+        current = flatten([table([arm_row("untrained", 0.66), arm_row("round3", 0.9)],
+                                 override=override("spike_sum"))])
+
+        report = compare(current, reference, tolerance=0.01)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["compared"], 1)
+        self.assertEqual([entry["arm"] for entry in report["extra"]], ["round3"])
+
+    def test_a_partial_sweep_checks_the_rows_it_shares(self):
+        reference = self._cell(0.84)
+        partial = [row for row in reference if row["arm"] == "untrained"]
+
+        report = compare(partial, reference, tolerance=0.0)
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["compared"], 1)
+        self.assertEqual([entry["arm"] for entry in report["missing"]], ["round1"])
 
     def test_every_quoted_metric_is_compared(self):
         self.assertEqual(len(METRICS), 6)

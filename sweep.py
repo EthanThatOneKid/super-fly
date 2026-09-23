@@ -74,14 +74,8 @@ def forced_statistic(protocol: Dict[str, object]) -> Optional[str]:
     return f"{override.get('evidence_rule')}@{override.get('evidence_decay')}"
 
 
-def cell_key(protocol: Dict[str, object],
-             statistics: Sequence[Tuple[str, str]] = ()) -> Tuple[object, ...]:
-    """What makes two runs the same cell: data, protocol, seed role, and statistic per arm.
-
-    ``statistics`` is the ``(arm, statistic)`` pairs the run recorded, so two runs without a
-    forced rule match only when every arm carried the same one -- and a table that predates the
-    statistic being recorded at all is kept apart from one that names it.
-    """
+def cell_key(protocol: Dict[str, object]) -> Tuple[object, ...]:
+    """What makes two runs the same cell: the data, the protocol, and the seed role."""
     return (
         shard_checksums(protocol),
         int(protocol.get("stride")),
@@ -89,8 +83,19 @@ def cell_key(protocol: Dict[str, object],
         tuple(int(seed) for seed in (protocol.get("replay_seeds") or ())),
         str(protocol.get("seed_role")),
         forced_statistic(protocol) or "per-arm",
-        tuple(sorted(statistics)),
     )
+
+
+def row_key(entry: Dict[str, object]) -> Tuple[object, ...]:
+    """What makes two *rows* the same measurement: the cell, the arm, and its statistic.
+
+    The arm set is deliberately not part of the key. A run that exercises only the untrained
+    baseline is comparable with the untrained row of a run that also carried three checkpoints
+    -- which is what makes a partial run usable as a reproduce check against a fuller
+    published table -- while two runs whose arm of the same name was measured on different
+    statistics stay apart, because the statistic is the key.
+    """
+    return (entry["cell_key"], entry["arm"], entry["statistic"])
 
 
 def cell_label(protocol: Dict[str, object]) -> str:
@@ -136,9 +141,7 @@ def flatten(tables: Sequence[Dict[str, object]]) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     for report in tables:
         protocol = report["protocol"]
-        statistics = [(str(row.get("arm")), statistic_of(protocol, row))
-                      for row in report["table"]]
-        key = cell_key(protocol, statistics)
+        key = cell_key(protocol)
         label = cell_label(protocol)
         paired = {entry.get("arm"): entry for entry in (report.get("paired") or [])}
         verdicts = {entry.get("arm"): entry for entry in (report.get("verdicts") or [])}
@@ -203,8 +206,8 @@ def render(rows: Sequence[Dict[str, object]]) -> str:
 
 
 def index(rows: Iterable[Dict[str, object]]) -> Dict[Tuple[object, ...], Dict[str, object]]:
-    """Key the rows the way a diff addresses them: ``(cell, arm)``."""
-    return {(entry["cell_key"], entry["arm"]): entry for entry in rows}
+    """Key the rows the way a diff addresses them: ``(cell, arm, statistic)``."""
+    return {row_key(entry): entry for entry in rows}
 
 
 def compare(rows: Sequence[Dict[str, object]], reference_rows: Sequence[Dict[str, object]],
@@ -218,6 +221,7 @@ def compare(rows: Sequence[Dict[str, object]], reference_rows: Sequence[Dict[str
     if tolerance < 0:
         raise ValueError("tolerance must not be negative")
     current, reference = index(rows), index(reference_rows)
+    compared = sum(1 for key in current if key in reference)
     moved: List[Dict[str, object]] = []
     for key, entry in sorted(current.items(), key=lambda item: str(item[0])):
         previous = reference.get(key)
@@ -241,17 +245,31 @@ def compare(rows: Sequence[Dict[str, object]], reference_rows: Sequence[Dict[str
             }
         if any(detail["moved"] for detail in deltas.values()):
             moved.append({"cell": entry["cell"], "arm": entry["arm"], "metrics": deltas})
+    # A reference that shares no row with this sweep has not been checked, and calling that a
+    # pass would be the silent pass every other guard here exists to prevent. The usual cause is
+    # that the data is not the same data -- the shard checksum is in the key -- so both sides'
+    # checksums are reported with it.
+    unaddressed = compared == 0 and bool(reference)
     return {
         "metrics": list(METRICS),
         "tolerance": tolerance,
-        "compared": sum(1 for key in current if key in reference),
+        "compared": compared,
         "moved": moved,
-        "missing": [{"cell": reference[key].get("cell"), "arm": reference[key].get("arm")}
+        "missing": [{"cell": reference[key].get("cell"), "arm": reference[key].get("arm"),
+                     "statistic": reference[key].get("statistic")}
                     for key in sorted(reference, key=str) if key not in current],
-        "extra": [{"cell": entry["cell"], "arm": entry["arm"]}
+        "extra": [{"cell": entry["cell"], "arm": entry["arm"],
+                   "statistic": entry["statistic"]}
                   for key, entry in sorted(current.items(), key=lambda item: str(item[0]))
                   if key not in reference],
-        "ok": not moved,
+        "unaddressed": unaddressed,
+        "reason": ("nothing compared: this sweep and the reference share no row, which usually "
+                   "means the data differs -- check the shard checksums below -- or that the "
+                   "protocol, the seeds or the statistic differ"
+                   if unaddressed else None),
+        "reference_data": sorted({str(key[0]) for key in reference}) if unaddressed else None,
+        "current_data": sorted({str(key[0]) for key in current}) if unaddressed else None,
+        "ok": not moved and not unaddressed,
     }
 
 
@@ -285,7 +303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # moved rather than only that one did.
     drift = compare(rows, reference_rows, args.tolerance)
     print()
-    print(f"drift vs {args.reference}: {drift['compared']} arm-rows compared, "
+    print(f"drift vs {args.reference}: {drift['compared']} row(s) compared, "
           f"{len(drift['moved'])} moved beyond {args.tolerance}")
     for entry in drift["moved"]:
         for metric, detail in entry["metrics"].items():
@@ -293,7 +311,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  {entry['arm']} @ {entry['cell']}: {metric} "
                       f"{detail['reference']} -> {detail['current']} ({detail['delta']})")
     for entry in drift["missing"]:
-        print(f"  missing from this sweep: {entry['arm']} @ {entry['cell']}")
+        print(f"  in the reference, not in this sweep: {entry['arm']} "
+              f"({entry['statistic']}) @ {entry['cell']}")
+    if drift["reason"]:
+        print(f"  {drift['reason']}")
+        for side in ("reference_data", "current_data"):
+            for checksum in drift[side] or []:
+                print(f"    {side.split('_')[0]} shards: {checksum}")
     if args.output:
         with open(args.output, "w", encoding="utf-8") as handle:
             json.dump({"rows": rows, "drift": drift}, handle, indent=2)

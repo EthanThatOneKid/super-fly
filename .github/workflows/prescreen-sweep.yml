@@ -9,13 +9,13 @@
 # independent, which is what makes them a matrix, and they are CPU-bound forward passes, which
 # is what makes a GitHub-hosted runner an adequate place to run them.
 #
-# What it needs to find on the runner: the teacher shard and the checkpoints the cells name.
-# They are inputs, not assumptions -- `dataset` and `checkpoints` are paths on the runner, so a
-# checkout that carries them works, and a self-hosted runner holding the data outside the
-# workspace works by passing absolute paths. The preflight step fails loudly naming the missing
-# path, because a sweep that silently ran against nothing is worse than one that did not run.
-# The emulator is never needed here: `stable_retro` is imported lazily, so the pre-screen path
-# imports without it, and the emulator-bearing modules are not on it.
+# What it needs to find on the runner: the teacher shard, and the checkpoints a cell names.
+# The shard is *generated*, not shipped: it is a deterministic function of the ROM, which is
+# tracked, so a cell whose dataset path is empty regenerates it with the emulator first. The
+# checkpoints are the only thing a runner has to be given; a dispatch with none runs the
+# untrained baseline alone, which is a legitimate probe of everything except checkpoint loading.
+# The pre-screen path itself imports without `stable_retro`, so the emulator is installed only
+# when a shard has to be regenerated.
 #
 # `reference` turns the sweep into a gate: point it at a table (or a directory of tables) that
 # holds the numbers a claim was published on, and the run fails when a metric moves further than
@@ -49,10 +49,15 @@ on:
           round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth
           feedback=runs/prescreen/feedback.pth
       dataset:
-        description: 'Teacher shard directory on the runner'
+        description: 'Teacher shard directory on the runner; regenerated from `rom` if absent'
         required: false
         type: string
         default: data/teacher_rom
+      rom:
+        description: 'ROM to regenerate the teacher shard from when `dataset` is absent'
+        required: false
+        type: string
+        default: roms/Super Mario Bros. (World).nes
       settle_steps:
         description: 'Default settle window for a cell that does not override it'
         required: false
@@ -74,7 +79,11 @@ on:
         type: string
         default: ''
       reference:
-        description: 'Table or directory of tables to check the sweep against; empty only reports'
+        description: >-
+          Table or directory of tables to gate the sweep against. Supplying one makes the run
+          strict: a metric moving further than `tolerance` fails the run, and so does a sweep
+          that shares no row with the reference at all (nothing was compared, so nothing was
+          checked). Empty only reports.
         required: false
         type: string
         default: ''
@@ -126,23 +135,40 @@ jobs:
       # say, and finding that out after several minutes of pip is the kind of wait this workflow
       # exists to remove.
       - name: Preflight the data this cell needs
+        id: preflight
         shell: bash
         env:
           DATASET: ${{ inputs.dataset }}
           CHECKPOINTS: ${{ inputs.checkpoints }}
+          ROM: ${{ inputs.rom }}
         run: |
           missing=0
           check() {
             if [ ! -e "$1" ]; then
-              echo "::error::missing $1 -- the teacher shard and the checkpoints are inputs; see this workflow's header."
+              echo "::error::missing $1 -- see this workflow's header for what a cell needs."
               missing=1
             fi
           }
-          check "$DATASET"
+          # A cell with no checkpoint runs the untrained baseline only -- which is a legitimate
+          # and cheap probe of the whole rest of the pipeline, so it is said out loud rather
+          # than passed over.
+          if [ -z "$CHECKPOINTS" ]; then
+            echo "no checkpoints given: every cell runs the untrained baseline only"
+          fi
           for spec in $CHECKPOINTS; do
             # NAME=PATH, so the path is what has to exist.
             check "${spec#*=}"
           done
+          if [ -e "$DATASET" ]; then
+            echo "teacher shard present at $DATASET"
+            echo "regenerate=false" >> "$GITHUB_OUTPUT"
+          else
+            # The shard is a deterministic function of the ROM, which is tracked, so a runner
+            # that has the emulator can make its own rather than being sent one.
+            echo "teacher shard absent: it will be regenerated from $ROM"
+            check "$ROM"
+            echo "regenerate=true" >> "$GITHUB_OUTPUT"
+          fi
           exit $missing
 
       - uses: actions/setup-python@v5
@@ -176,6 +202,38 @@ jobs:
           PY
           python -m pip install --upgrade pip
           python -m pip install -r core-requirements.txt
+
+      - name: Install the emulator
+        # Only to regenerate the shard: the pre-screen path itself never imports it.
+        if: steps.preflight.outputs.regenerate == 'true'
+        shell: bash
+        run: |
+          python -m pip install --only-binary=:all: "stable-retro>=0.1.0"
+
+      - name: Regenerate the teacher shard from the tracked ROM
+        if: steps.preflight.outputs.regenerate == 'true'
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+          ROM: ${{ inputs.rom }}
+        run: python -u teacher.py --rom "$ROM" --output "$DATASET"
+
+      - name: Report the shard this cell will run on
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+        run: |
+          # Printed before the run, so a comparison that ends up addressing nothing (see
+          # sweep.py's `unaddressed`) can be diagnosed from the same log.
+          python - <<'PY'
+          import os
+
+          from trajectory import dataset_provenance
+
+          provenance = dataset_provenance(os.environ["DATASET"])
+          for shard in provenance.get("shards", []):
+              print(f"  {shard.get('path')}: {shard.get('samples')} samples, sha256 {shard.get('sha256')}")
+          PY
 
       - name: Run the cell
         shell: bash
