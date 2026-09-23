@@ -504,6 +504,225 @@ python pretrain.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --epo
 `data/` (teacher shards) and `runs/` (reports, checkpoints, aggregated datasets) are
 regenerated artifacts and are not committed.
 
+### Where the ceiling is: the decision rule, or the representation?
+
+Level 1-1 needs ~20 jumps and, under the replay's fatality model, a missed one ends the run, so
+completion needs per-jump reliability near 1 -- at 0.90 a run survives its twenty decisions about
+12% of the time, and at 0.84, where the best closed-loop arm sits teacher-forced, about 3%. The
+answer to "why not" is either a **decoder** change (the rule reading motor spikes is discarding a
+distinction the network makes) or a **representation** change (the distinction was never there),
+and they have very different price tags. `oracle.py` prices them offline, with no emulator and no
+training.
+
+It records every frame of the settle window rather than the sum the shipped decoder reads, so
+every aggregation rule can be applied to identical draws; it probes the central-complex population
+one layer upstream from the same forward passes; and it reports the best score any of them reaches
+on the teacher's own chunks with the threshold *and* the timing chosen from the labels. Because it
+peeks, it can only overstate what a causal policy reaches, which is what makes it a ceiling.
+Everything is quoted at **bounded jump cost** -- the most jumps catchable while keeping run-chunk
+recall at 0.95 -- so a statistic that catches every jump by jumping on everything cannot win, which
+is the same exploit the sequence gate had to close.
+
+Two families of motor statistic are scored, and the difference between them turned out to be the
+largest decoder finding in the experiment:
+
+* the **binary spike** evidence the shipped decoder reads: the sum, the mean, the last frame, the
+  per-frame max, the best and the worst prefix, a leaky accumulator, a normalised contrast, a
+  crossing latency, and the two spread/recency shapes below;
+* the **analog motor drive** -- the pre-threshold input current `connectome.LIFNeuronLayer`
+  integrates and then throws away. A five-frame spike sum takes six values per channel, so a
+  threshold on it can only sit between integers; the drive is continuous, so it cannot.
+
+Real teacher shard, 99 chunks (25 of them jumps), dev seeds 45-49, cadence 15. Bounded per-jump
+recall, threshold and timing oracled; each cell is the spike family's best -> the drive family's
+best (AUC in brackets):
+
+| arm | settle 5 (shipped) | settle 10 | settle 20 |
+| --- | --- | --- | --- |
+| untrained | 0.440 (0.844) -> **0.784** (0.957) | 0.624 -> 0.976 | 0.952 -> **1.000** |
+| DAgger round 1 | 0.656 (0.933) -> **0.920** (0.987) | 0.808 -> 1.000 | 0.928 -> 1.000 |
+| DAgger round 2 | 0.648 (0.924) -> **0.928** (0.987) | 0.800 -> 0.984 | 0.944 -> 1.000 |
+| visual pathway @2e-3, 30 epochs | 0.000 -> 0.000 | 0.000 -> 0.000 | 0.008 -> 0.024 |
+
+The rule-by-rule view at the window the controller actually ships (round 1, settle 5, five-seed
+means) is where the second finding is:
+
+| statistic | AUC | bounded jump recall |
+| --- | --- | --- |
+| `spike_sum` -- what the decoder shipped with | 0.657 | **0.056** |
+| `spike_leaky_early` (best spike rule) | 0.653 | 0.104 |
+| `spike_range` (within-window spread, spike) | 0.531 | 0.000 |
+| `drive_sum` -- the analog drive, flat | 0.640 | 0.128 |
+| `drive_normalized` (scale-free) | 0.633 | 0.104 |
+| `drive_leaky_early` @ 0.75 | 0.634 | 0.152 |
+| `drive_leaky_recency` @ 0.25 | 0.611 | **0.160** |
+| `drive_leaky_recency` @ 0.5 | 0.627 | 0.120 |
+| `drive_leaky_recency` @ 0.75 | 0.640 | 0.112 |
+| `drive_recency_normalized` @ 0.5 | 0.615 | 0.088 |
+| drive timing oracle (best frame per chunk) | 0.987 | 0.920 |
+| best linear functional of the drive traces | 0.803 | 0.360 |
+| **family ceiling (drive)** | **0.987** | **0.920** |
+
+Read it as four separate facts:
+
+* **The evidence is not saturated -- it is starved.** The ceiling climbs monotonically with the
+  number of draws per decision (0.44 -> 0.62 -> 0.95 for the untrained arm, 0.66 -> 0.81 -> 0.93 for
+  round 1), and at 20 draws the ordering is essentially perfect (AUC 0.99). Whatever limits this
+  arm is not a network that has run out of range; it is a decision taken from very few looks.
+* **Reading the sum instead of the drive costs about two thirds of the jumps a fitted threshold
+  could catch.** On identical draws at the shipped window, `spike_sum` reaches 0.056 bounded recall
+  and `drive_leaky_recency` 0.160 -- with *no* better ordering at all (AUC 0.657 vs 0.611, and the
+  drive is the worse of the two). The gain is not ranking; it is that a continuous statistic has
+  somewhere for a threshold to sit, and rounding a five-frame window to six levels costs more than
+  everything the nine spike rules were searching for. **It also does not transfer to the gate** -- the
+  rule that gains here loses on the sequential pre-screen, and `spike_sum` stays the default: see
+  "What the decoder reads" below.
+* **Which reduction of the drive is used is settled by resolution, not by timing.** The decay sweep
+  is inconsistent across arms -- 0.25 beats 0.5 on round 1 and loses on round 2, by less than one
+  jump chunk of 25 -- and the flat `drive_sum` (0.128) is close to the best decayed rule (0.160). The
+  shipped statistic is recency-weighted because a decision is committed on the frame it is made on
+  and that is the defensible shape; the *measurement* above establishes the resolution and nothing
+  about the weighting. Every decay in the grid is in the table so the selection is reviewable.
+* **At the shipped window the ceiling is 0.92 and the verdict is still `representation`; at ten or
+  twenty draws it crosses the 0.97 bar and the verdict becomes `decoder`.** That is worth stating
+  plainly because it moves the argument: at settle 10 the drive ceiling is 1.000 for round 1 and
+  0.976 for the untrained network, while at settle 5 it is 0.920 and 0.784. The limit at the
+  shipped window is the window. The `decoder` verdict rests on a *label-aware timing oracle*, so it
+  says a rule that reads the same window as well exists; the best causal rule reaches 0.16, and when
+  that rule was actually put through the gate it moved nothing that is rate-free and lost 0.30 of
+  sequential recall (see "What the decoder reads" below), which is what leaves the **window** as the
+  only lever here that has moved a ceiling anywhere near the 0.97 completion needs.
+
+**The population one layer upstream does not bail the readout out.** A one-dimensional readout of
+the central-complex population, with its direction and boundary fitted on training chunks and
+scored on held-out ones, reaches 0.448 bounded recall at settle 5 and 0.168 at settle 20, and a
+1-nearest-neighbour probe (which assumes no linearity) reaches 0.200 / 0.152. Both are *worse* than
+the motor evidence's own ceiling. The Fisher direction fitted on all frames scores 1.000 -- and
+that number is a fit, not evidence: 128 dimensions against ~500 frames separates anything. The
+shrinkage is swept and the winner picked on the held-out score, so a "not separable" reading cannot
+be an artefact of an under-regularised direction.
+
+**The readout is also the only thing that has ever changed.** Re-recording with identical seeds
+shows the central population is **bit-identical** between the untrained baseline, DAgger round 1
+and DAgger round 2 -- they differ only in `layer3_4`, 512 weights over 128 central units, because
+the connectome below the readout is frozen and nothing downstream feeds back into it. The arm that
+does change the population (training the visual pathway) saturates it: its motor layer emits no
+spikes at all (`motor mean 0.0`, AUC 0.500 at settle 5 and 10), which is why its calibration
+degenerated to always-jump and why the sequence pre-screen had to close that hole with a rate
+budget. "We trained the network" has so far meant "we trained 512 weights".
+
+Two limits stay on the record. `settle 20` is a *different controller* -- twenty SNN steps per
+emulator frame, four times the inference cost, and different adaptation -- so its ceiling is not
+something to switch on without re-measuring closed-loop, where only the emulator arbitrates. And
+99 chunks is not enough to certify *any* 128-dimensional readout of the population: the held-out
+numbers bound what a readout achieves here, not what one would achieve with more labelled chunks,
+which is why the verdict field is a pre-committed reading rather than a proof.
+
+```bash
+python oracle.py --dataset data/teacher_rom --stride 15 --settle-steps 5,10,20 --replays 5 \
+  --checkpoint round1=runs/closed_loop_dagger/iter-01/checkpoint.pth \
+  --checkpoint round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth \
+  --checkpoint feedback=runs/prescreen/feedback.pth \
+  --output runs/oracle/ceiling.json
+```
+
+### What the decoder reads: the settle-window statistic (issue #30)
+
+The decision rule was never the whole decoder: the controller compares two numbers, and until now
+those two numbers were the **sum of binary motor spikes** over the settle window -- six possible
+values per channel at settle 5. The ceiling measurement above found that this quantisation, not the
+network, was worth the largest single margin in the offline pipeline (0.056 of the jumps a fitted
+boundary could catch, against 0.160 for a rule reading the motor layer's pre-threshold *drive* on
+identical draws). So the statistic became a parameter:
+
+* `evidence.py` owns the reduction, and `spike_sum` is one of eight rules -- so the change can be
+  measured against exactly what it replaces rather than against a memory of it. The rest are
+  `spike_*` variants (recency-weighted, and recency-weighted and scale-free) and `drive_*` variants
+  that read the pre-threshold input current `connectome.LIFNeuronLayer` integrates and then
+  thresholds away: one matrix product, inside a forward pass that has already happened.
+* The rule travels **in the checkpoint**, as `policy_config.macro_decoder.evidence_rule` /
+  `evidence_decay`, because a threshold and the statistic it thresholds only mean anything together.
+  The closed loop restores it with the rest of the policy, so an arm runs the statistic its own
+  margin was fitted for.
+* A checkpoint that names no rule is one from before the rule travelled in a checkpoint, and the
+  only statistic that existed then is the spike sum. When that is the rule being measured its own
+  margin is applied unchanged -- a pre-existing checkpoint re-screened under the default reproduces
+  the number it always had. Measuring it under a *different* statistic re-fits the margin on the dev
+  seeds and records both values: `margin_source` on every row says `checkpoint` or
+  `recalibrated_for_evidence_rule`, with the rule, the margin that was replaced and the calibration
+  that replaced it. That is the guard against the silent failure this replaces -- a spike-count
+  threshold applied to a drive statistic reads as "never jump", and nothing in the report would have
+  said which.
+* `prescreen.py --evidence-rule NAME` forces one statistic across every arm, baseline included,
+  which is how the *statistic* is isolated from each arm's own threshold.
+
+**The replacement was measured, and it did not earn its place.** Dev seeds 45-49, five replays, the
+real teacher shard, one run per rule with the margin fitted for whichever statistic is applied.
+`seq` is the sequential view the gate reads; `budget` is the rate-free view beside it (jump-chunk
+recall at a fixed 0.35 jump budget), which no margin touches:
+
+| statistic forced on every arm | untrained seq / budget | round 1 seq / budget | round 2 seq / budget | jump rate spent (untrained / round 1) |
+| --- | --- | --- | --- | --- |
+| `spike_sum` (shipped) | 0.660 / **0.360** | **0.840** / 0.496 | 0.520 / **0.504** | 0.192 / 0.291 |
+| `spike_leaky_recency` @ 0.25 | 0.760 / 0.344 | 0.720 / 0.480 | 0.750 / 0.416 | 0.248 / 0.234 |
+| `drive_sum` | **0.960** / 0.336 | 0.740 / 0.488 | 0.440 / 0.464 | **0.374** / 0.242 |
+| `drive_leaky_recency` @ 0.25 | 0.730 / 0.336 | 0.540 / 0.480 | 0.510 / 0.472 | 0.212 / 0.164 |
+| `drive_leaky_recency` @ 0.75 | **0.960** / 0.336 | 0.510 / **0.544** | 0.680 / 0.464 | **0.404** / 0.168 |
+
+* **The rate-free view barely moves.** Across all five statistics the untrained baseline's budget
+  recall spans 0.336-0.360, round 1's spans 0.480-0.544 and round 2's spans 0.416-0.504, and the AUC
+  from the ceiling measurement says the same thing from the other direction: the drive orders the
+  chunks *no better* than the sum it would replace (0.611 against 0.657). The evidence does not
+  improve; only the *operating point* moves, and there is no more of it than that.
+* **The sequential view swings by 0.30 on every arm, and the swing tracks the jump rate spent.**
+  Untrained 0.660-0.960 (rate 0.192-0.404), round 1 0.510-0.840 (0.164-0.291), round 2 0.440-0.750
+  (0.131-0.232): each statistic's calibrated margin lands somewhere else on the same ROC, and the
+  arms that look best are the ones spending the most. The clearest case is the untrained baseline
+  with the flat drive: 0.960 while spending **0.374** of its decisions jumping, above the 0.35
+  budget, where at its own budget its recall is 0.336 -- the same as the two rules it appears to
+  beat. The paired criterion sees the same effect from the other end: against that inflated baseline
+  every trained arm "fails" `beats_untrained` (-0.22 and -0.52), where with the shipped sum round 1
+  passes it (+0.18 on 5/5 replays) and round 2 does not (+0.01 on 2/5).
+* **No arm passes under any statistic**, so the gate's verdicts do not move; and the statistic whose
+  settings are *not* re-fitted for it is the one that shipped. `spike_sum` therefore stays the
+  default, and the drive rules stay reachable per arm and per checkpoint -- that is what made the
+  comparison possible on identical draws. The ordering inside the sequential view is no more stable
+  than it was between the DAgger rounds: `spike_leaky_recency` puts round 2 ahead of round 1
+  (0.750 vs 0.720) where the shipped sum puts round 1 ahead (0.840 vs 0.520), on the same data and
+the same seeds. The ceiling's resolution finding remains a reading of the ceiling's own metric (a
+  boundary fitted at a run-chunk recall floor), not yet a claim about the controller.
+
+**A defect in the paired comparison that this exposed, not yet fixed.** The baseline's margin is
+calibrated the same way an arm's is, but nothing constrains the *rate* it spends, and the paired
+criterion compares the two as if it did. With the flat drive the untrained baseline spends 37.4% of
+its decisions jumping against a 35% budget, so an arm that stays inside the budget is measured
+against a bar that overspends it. No verdict flips here -- both trained arms fail completion and
+recall on their own merits -- but a baseline free to exploit the budget is the same exploit the
+budget criterion was added to close, one level up. The fix is to hold the baseline to the same
+budget (or compare at a matched rate) before the paired criterion is trusted again.
+
+```bash
+# one run per statistic; --evidence-rule forces it on every arm, baseline included
+for rule in spike_sum spike_leaky_recency drive_sum drive_leaky_recency; do
+  python prescreen.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --replays 5 \
+    --evidence-rule "$rule" \
+    --checkpoint round1=runs/closed_loop_dagger/iter-01/checkpoint.pth \
+    --checkpoint round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth \
+    --checkpoint feedback=runs/prescreen/feedback.pth \
+    --output "runs/prescreen/$rule.json"
+done
+
+# and one table for all of them, with a drift check against a published one
+python sweep.py --tables runs/prescreen/*.json --reference runs/prescreen/dev_sequence_table.json
+```
+
+`sweep.py` is what does the merging by hand otherwise: rows are keyed by the shard checksum, the
+protocol, the seed *role* and the statistic each arm ran under, so two cells that differ in any of
+those stay apart instead of being averaged together, and a table that produced no file is reported
+rather than omitted. `.github/workflows/prescreen-sweep.yml` runs a set of cells as a matrix on
+dispatch, one job per cell, and calls the same merge -- with a `reference` input it fails the run
+when a published number moves.
+
 ## How it works
 
 1. Each NES frame is converted to a synthetic ommatidial grid (28×28 × 5
