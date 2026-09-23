@@ -122,6 +122,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Before the install, not after it: a cell whose data is not on the runner has nothing to
+      # say, and finding that out after several minutes of pip is the kind of wait this workflow
+      # exists to remove.
+      - name: Preflight the data this cell needs
+        shell: bash
+        env:
+          DATASET: ${{ inputs.dataset }}
+          CHECKPOINTS: ${{ inputs.checkpoints }}
+        run: |
+          missing=0
+          check() {
+            if [ ! -e "$1" ]; then
+              echo "::error::missing $1 -- the teacher shard and the checkpoints are inputs; see this workflow's header."
+              missing=1
+            fi
+          }
+          check "$DATASET"
+          for spec in $CHECKPOINTS; do
+            # NAME=PATH, so the path is what has to exist.
+            check "${spec#*=}"
+          done
+          exit $missing
+
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -153,26 +176,6 @@ jobs:
           PY
           python -m pip install --upgrade pip
           python -m pip install -r core-requirements.txt
-
-      - name: Preflight the data this cell needs
-        shell: bash
-        env:
-          DATASET: ${{ inputs.dataset }}
-          CHECKPOINTS: ${{ inputs.checkpoints }}
-        run: |
-          missing=0
-          check() {
-            if [ ! -e "$1" ]; then
-              echo "::error::missing $1 -- the teacher shard and the checkpoints are inputs; see this workflow's header."
-              missing=1
-            fi
-          }
-          check "$DATASET"
-          for spec in $CHECKPOINTS; do
-            # NAME=PATH, so the path is what has to exist.
-            check "${spec#*=}"
-          done
-          exit $missing
 
       - name: Run the cell
         shell: bash
