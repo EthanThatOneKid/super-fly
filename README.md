@@ -159,8 +159,9 @@ never returns to it. The fix is to train on the states the candidate actually vi
 
 One DAgger round is: model-only on-policy rollouts → divergence / unrecoverable detection
 against the teacher schedule → labelled recovery windows → aggregated teacher + rollout
-dataset → supervised pretraining at the chunk cadence → model-only evaluation on the
-reserved seeds.
+dataset → supervised pretraining at the chunk cadence → model-only evaluation on the seed set in
+play (`--eval-seeds`, dev seeds by default; the reserved gate set is opt-in, because the rounds
+are tuned by reading their scores -- see "Tuning seeds and the reported claim" below).
 
 ```sh
 # Record the teacher shard, then run bounded DAgger rounds on the real ROM
@@ -233,7 +234,8 @@ served by the held commitment, and how many of the window's targets progress-onl
 would have got wrong (`label_flips`).
 
 **Ablation on the real ROM** (identical seeds, cadence 15, settle 5, horizon 1600, 30 epochs,
-one episode per reserved seed). The rollout is model-only, so it visits the same 131 frames in
+one episode per seed on the reserved set 42/43/44 -- measured before the split, so these are the
+seeds the arm was being selected against at the time; the runner now iterates on dev seeds). The rollout is model-only, so it visits the same 131 frames in
 both arms and dies in the same place; only the recovery window's supervision differs:
 
 | Arm | window target | window frames mislabelled | motor argmax acc | round-1 best_x | per-seed |
@@ -249,8 +251,8 @@ gate blocker. It is worth keeping for the reason the audit gives: the defect sca
 much of the level a policy survives (35.7% of ground states are affected), so it would silently
 compound in any run that got further than x 312.
 
-Offline validation of this loop (synthetic env, cadence 15, settle 3, seeds 42/43/44,
-400-step horizon, 2 epochs):
+Offline validation of this loop (synthetic env, cadence 15, settle 3, seeds 42/43/44 -- also from
+before the seed split, 400-step horizon, 2 epochs):
 
 | round | best_x | mean best_x | death rate | model only | windows | dataset samples |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -271,8 +273,11 @@ still dies in both rounds. A real result needs more seeds, a longer horizon, and
 ### Real-ROM run (issue #30)
 
 Run inside a Linux container (`python:3.11-slim`, CPU torch, `stable-retro` manylinux
-wheel) against the committed ROM, cadence 15, settle 5, horizon 1600, one episode per
-reserved seed. The teacher plan completes Level 1-1 on this ROM in 1,477 frames
+wheel) against the committed ROM, cadence 15, settle 5, horizon 1600, one episode per seed on the
+reserved set (42/43/44). **This run predates the seed split** and was part of how the arms were
+selected, so it reads as a tuning measurement today; the runner reaches those seeds with
+`--eval-seeds 42,43,44`, and `claim_eligible` is what records that a run did. The teacher plan
+completes Level 1-1 on this ROM in 1,477 frames
 (`max_x` 3243, no death), so the upper bound and the completion detector are both real:
 
 | arm | best_x | mean best_x | death rate | completion | jump decisions (per seed) |
@@ -318,6 +323,38 @@ invariants (rows re-centred, weights clamped to ±3), and `weight_deltas` record
 each layer actually moved, so a mode that leaves the pathway at its initialization is
 visible rather than assumed.
 
+#### Tuning seeds and the reported claim
+
+Every offline number here used to be measured on whatever seeds the caller passed, and the
+default was the same three the closed loop reserves for its published model-only evaluation. That
+put the pre-screen's verdicts on the seeds the eventual claim has to be made on, while the arms
+were being *chosen* by reading those same numbers -- a learning-rate sweep, a visual-pathway arm,
+a margin-calibration method. Re-scoring an arm on the seeds it was selected against does not
+un-contaminate it, and a table a reader can re-run is worth little if the arm in it was picked
+from the numbers in it.
+
+`seed_policy.py` splits the two roles and refuses to let one set straddle them:
+
+| role | seeds | what may happen on them |
+| --- | --- | --- |
+| **dev** | 45, 46, 47, 48, 49 | calibration, sweeps, ablations and every "has this arm earned an emulator run" verdict. Re-measurable as often as the work needs. |
+| **gate** (reserved) | 42, 43, 44 | the closed loop's model-only evaluation -- the only place a completion claim can be made. **Report-only**: fitting a margin, calibrating a decoder or gating an arm on these raises. |
+
+Concretely:
+
+* `prescreen.py` and `pretrain.py` iterate on dev seeds and **refuse** the reserved set (a
+  `ValueError`, not a warning), because the pre-screen's output *is* a gate verdict;
+* `closed_loop_dagger.py` defaults `--eval-seeds` to the head of the dev range, and its
+  `claim_eligible` flag -- now required by `p0_gate_met` -- is true only for a real ROM run on the
+  **whole** reserved set, so a completion seen on dev seeds is a tuning reading, not a claim;
+* a seed set that mixes the two, or that is a strict subset of the reserved set, is an error; and
+* `replays=N` walks down the dev range instead of counting up from a base seed -- counting up from
+  42 is exactly how a tuning run silently landed on the reserved triple in the first place.
+
+`init_seed` (default 42) is a separate axis and deliberately so: it seeds the *weights* of the
+untrained baseline, which has to be the initialization the candidate actually started from, so
+that the null arm is the same null. It is not an evaluation seed and does not enter the split.
+
 ### The pre-screen: how an arm earns an emulator run (issue #30)
 
 `prescreen.py` decides whether an arm is worth an emulator run, and it fits nothing. The default
@@ -339,46 +376,65 @@ gate's progress measure.
   fatality model ("any missed teacher jump ends the run"): where the run dies, and whether it
 gets to the flagpole. Reported and **not** gated on, for the reasons below.
 
-Real teacher shard, 20 required jumps over 1,477 frames (98 decisions), 3 replays (seeds
-42/43/44), cadence 15, settle 5. `emulator best_x` is the closed-loop score the *same
+Real teacher shard, 20 required jumps over 1,477 frames (99 decisions per replay), **dev seeds
+45-49** (5 replays), cadence 15, settle 5 -- the seeds iteration is allowed to use, so this is the
+table the verdicts below are read off. `emulator best_x` is the closed-loop score the *same
 checkpoint* produced on the ROM:
 
-| arm | jump recall | per replay | jumps taken | spurious | jump rate | `best_x` (pessimistic) | per replay | emulator `best_x` |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| untrained | 0.733 | 0.60 / 0.70 / 0.90 | 14.7 | 11.7 | 0.266 | 899 | 249 / 249 / 2200 | 898 |
-| DAgger round 1 (readout only, 30 epochs) | 0.817 | 0.75 / 0.85 / 0.85 | 16.3 | 11.7 | 0.283 | 374 | 249 / 249 / 624 | **1247** |
-| DAgger round 2 (continued from round 1) | 0.850 | 0.85 / 0.75 / 0.95 | 17.0 | 12.0 | 0.293 | 712 | 249 / 249 / 1638 | 899 |
-| visual pathway @2e-3, 30 epochs | **1.000** | 1.00 / 1.00 / 1.00 | 20.0 | **29.0** | **0.495** | 3243 | 3243 ×3 | not run |
+| arm | jump recall | per replay | jumps taken | spurious | jump rate | paired Δ vs untrained | `best_x` (pessimistic) | per replay | emulator `best_x` |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| untrained | 0.800 | 0.80 / 0.80 / 0.90 / 0.80 / 0.70 | 16.0 | 10.4 | 0.267 | – | 437 | 549 / 887 / 249 / 249 / 249 | 898 |
+| DAgger round 1 (readout only, 30 epochs) | 0.840 | 0.85 / 0.85 / 0.90 / 0.80 / 0.80 | 16.8 | 12.0 | 0.291 | +0.040 (3/5) | 1277 | 2125 / 1750 / 1075 / 549 / 887 | **1247** |
+| DAgger round 2 (continued from round 1) | 0.810 | 0.90 / 0.60 / 0.85 / 0.80 / 0.90 | 16.2 | 12.2 | 0.287 | +0.010 (2/5) | 1322 | 2350 / 362 / 887 / 887 / 2125 | 899 |
+| visual pathway @2e-3, 30 epochs | **1.000** | 1.00 x5 | 20.0 | **29.0** | **0.495** | +0.200 (5/5) | 3243 | 3243 / 3243 / 3243 / 3243 / 3243 | not run |
 
 Read honestly:
 
-* **The sequence view separates the arms, and still does not rank them like the emulator.** Jump
-  recall climbs 0.733 (untrained) → 0.817 → 0.850, with the ceiling effect gone -- and round 2
-  still beats round 1 on recall, on consistency against the untrained baseline (3/3 seeds vs
-  2/3) and on `best_x` (712 vs 374), while its emulator `best_x` is the *worse* one (899 vs
-  1247). Two offline views have now failed to reproduce that ordering, and the second failure is
-  not a scoring artefact: the decisions here really are made in sequence. **Teacher forcing is
-  the limit** -- the arm's own trajectory never exists in the replay, so nothing models the
-  state its decisions would create, and the emulator's ordering is about dynamics, not decisions.
-* **`offline_best_x` saturates and is high-variance**: 249 / 249 / 2200 for the untrained arm,
-  249 / 249 / 624 for round 1. With ~20 required jumps and a per-jump success rate below ~0.9,
-  the first miss lands early for every weak arm. That is why it is reported and not gated on.
-* **The visual-pathway arm "completes" the level offline -- and it is not a learner.** Recall
-  1.000, completion 1.00 on all three replays, reaching the teacher's max_x. Its calibration
-  degenerated to "jump on everything", so it spends **49.5%** of its decisions jumping, 29 of
-  them spurious. Covering the teacher's 20 jumps inside a 35% budget needs at least 20 of ~34
-  jumps on target; jumping constantly is not a strategy this replay can punish, because the
-  model's own airborne state is never simulated.
-* **The rate budget closes that hole, and it is the only criterion that does.** All five gate
-  criteria hold for the visual-pathway arm *except* `jump_rate_within_budget` (0.495 vs 0.35).
-  Round 2 fails only completion and the 0.90 recall floor (0.850); round 1 fails four of five
-  (completion, recall 0.817, paired gain +0.083, and consistency at 2/3 seeds). **No arm passes,
-  and the report says which way each one is wrong** -- which is the useful outcome: no emulator
-  run is justified yet, and the two arms that look best offline are best for different reasons,
-  one of which is a defect.
-* The per-replay spread (round 1: 0.62 → 0.90 on the recall scale, 0.249 → 0.624 on `best_x`) is
-  **larger than any arm's paired gain**, which is why the verdict demands that every replay
-  improve and not just the mean.
+* **Nothing passes, and the shape of each failure is unchanged.** Round 1 fails four of five
+  criteria (completion 0.00, recall 0.840 against the 0.90 floor, paired gain +0.040 against
+  +0.10, consistency on 3/5 replays); round 2 fails the same four (0.00, 0.810, +0.010, 2/5); the
+  visual-pathway arm fails **only** the jump budget. **No arm has earned an emulator run.**
+* **The baseline moves with the seed set, which is why it is in the table.** Untrained recall is
+  0.800 on the dev seeds against 0.733 on the reserved three -- same shard, same decoder, same
+  metric -- so an absolute recall figure is partly a statement about which seeds were spent. A
+  verdict read against a fixed floor alone would be a verdict about the seeds, which is why the
+  gate compares every arm to the baseline measured on the *same* replays.
+* **The round-1/round-2 ordering does not survive three more replays.** On the reserved three,
+  recall was 0.817 vs 0.850: round 2 ahead, against the emulator's 1247 vs 899. On the dev five it
+  is 0.840 vs 0.810 -- round 1 ahead, *matching* the emulator. So the "the sequential pre-screen
+  does not rank the arms like the emulator" result previously recorded here was measured on the
+  seeds the arms were being selected against, and it does not survive the move to the tuning set.
+  The honest statement is that the ordering is not stable at this sample size, not that an offline
+  replay cannot in principle track a closed loop. What does hold on both sets: `best_x` still
+  prefers round 2 (1322 vs 1277) where the emulator has it behind, and teacher forcing still means
+  the arm's own trajectory never exists.
+* **The trained arms' edge over their own initialization is weak.** Paired deltas are +0.040
+  (3/5 replays improved) and +0.010 (2/5), both far short of the +0.10 floor. Round 2's *mean*
+  recall sits above the untrained *mean*, but on the paired view it is a coin flip, so the fair
+  description of this readout is "at or barely above its initialization". The budget view agrees:
+  untrained 0.360, round 1 0.496, round 2 0.504, chance 0.343.
+* **`offline_best_x` still saturates and is still high-variance**: 549 / 887 / 249 / 249 / 249 for
+  the untrained arm, 2350 / 362 / 887 / 887 / 2125 for round 2. With ~20 required jumps and a
+  per-jump success rate below ~0.9, the first miss lands early for every weak arm. Reported and
+  not gated on.
+* **The visual-pathway arm "completes" the level offline on every replay -- and it is not a
+  learner.** Recall 1.000, completion 1.00 on all five replays, reaching the teacher's max_x, paired
+  gain +0.200. Its calibration degenerated to "jump on everything", so it spends **49.5%** of its
+  decisions jumping, 29 of them spurious. Covering the teacher's 20 jumps inside a 35% budget needs
+  at least 20 of ~34 jumps on target, and jumping constantly is not a strategy this replay can
+  punish, because the model's own airborne state is never simulated. The rate budget is the *only*
+  criterion that catches it, and it does so on both seed sets -- the exploit is a property of the
+  metric, not of the seeds.
+* The per-replay spread (round 2: 0.60 -> 0.90 on the recall scale; round 1: 549 -> 2125 on
+  `best_x`) is **larger than any arm's paired gain**, which is why the verdict demands that every
+  replay improve and not just the mean -- and why a five-replay table imposes a stricter
+  consistency requirement than the three-replay one it replaces.
+
+**The reserved set carries no pre-screen table any more.** The numbers that used to stand here
+(untrained 0.733, round 1 0.817, round 2 0.850 over seeds 42/43/44) were measured on the seeds the
+arms were selected against, and `prescreen.py` now refuses that set, so they are not reproducible
+through it by design. They stay on the record *as history*, not as a verdict: the verdict is the
+dev table above, and the reserved set is where the closed-loop model-only evaluation is reported.
 
 **Two measurements this replaced, for the record.** *Calibrated balanced accuracy* pooled over
 replays refitted the decision boundary on the evidence it then scored; at 3 epochs it read
@@ -386,9 +442,9 @@ replays refitted the decision boundary on the evidence it then scored; at 3 epoc
 learning from the initialization heuristic, and on round 2 it *rose* (0.57 → 0.66) while the
 closed-loop score fell (1247 → 899). *Jump-chunk recall at a bounded jump rate* fixed the
 fitting and the pooling, and was then replaced because it scored one decision at a time from a
-cold state; its numbers are still reported under `budget` in every pre-screen (untrained 0.333,
-round 1 0.413, round 2 0.427, visual pathway 0.280, chance 0.343), and it is the view that
-correctly rated the visual-pathway arm lowest. Balanced accuracy survives only as the *margin
+cold state; its numbers are still reported under `budget` in every pre-screen (dev seeds:
+untrained 0.360, round 1 0.496, round 2 0.504, visual pathway 0.280, chance 0.343), and it is
+the view that correctly rated the visual-pathway arm lowest. Balanced accuracy survives only as the *margin
 chooser* for the shipped decoder (`calibrate_jump_margin`), which is validated closed-loop
 (313 → 1247).
 
@@ -418,11 +474,19 @@ replay costs about 30 s per arm-replay at settle 5 (1,477 frames × 5 forward pa
 ~15× the budget view it sits next to:
 
 ```bash
-python prescreen.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --seed 42 --replays 3 \
+python prescreen.py --dataset data/teacher_rom --stride 15 --settle-steps 5 --replays 5 \
   --checkpoint round1=runs/closed_loop_dagger/iter-01/checkpoint.pth \
   --checkpoint round2=runs/closed_loop_dagger/round2/iter-01/checkpoint.pth \
-  --output runs/prescreen/sequence_table.json
+  --checkpoint feedback=runs/prescreen/feedback.pth \
+  --output runs/prescreen/dev_sequence_table.json
 ```
+
+That is the table above, read off the dev seeds. No `--seed` flag: the pre-screen spends the
+**dev** seeds by default, `--replays` says how many (3 by default, 5 above; `--seeds
+45,46,47,48,49` is the same thing spelled out), and passing the reserved gate set (42-44) to it is
+an error rather than an option -- see "Tuning seeds and the reported claim" above. Every table
+prints its role in the header, so a reader can tell which set a number came from without reading
+the command that produced it.
 
 Every `pretrain.py` run assembles the same table -- candidate plus untrained baseline, paired,
 with the verdict -- and records it as `metadata["prescreen"]` and under
