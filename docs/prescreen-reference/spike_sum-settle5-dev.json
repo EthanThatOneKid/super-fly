@@ -1,0 +1,3076 @@
+{
+  "protocol": {
+    "metric": "teacher_forced_sequence",
+    "supporting_metric": "jump_recall_at_bounded_rate",
+    "dataset": "/app/data/teacher_rom",
+    "dataset_provenance": {
+      "schema_version": 1,
+      "shard_count": 1,
+      "total_samples": 1477,
+      "shards": [
+        {
+          "path": "shard-00000.npz",
+          "samples": 1477,
+          "sha256": "c050a0a017779d2a4db3f6413058d46707b3397b768808c470867d2f642090b8",
+          "provenance": {
+            "origin": "teacher",
+            "source": "deterministic_beam_teacher",
+            "level": "Level1-1",
+            "completed": true,
+            "macro_frames": 15,
+            "env_kind": "stable-retro",
+            "samples": 1477
+          }
+        }
+      ],
+      "metadata": {
+        "source": "deterministic_beam_teacher",
+        "level": "Level1-1",
+        "completed": true,
+        "macro_frames": 15,
+        "env_kind": "stable-retro"
+      },
+      "checksums_verified": true
+    },
+    "stride": 15,
+    "settle_steps": 5,
+    "seed_role": "dev",
+    "replays": 5,
+    "replay_seeds": [
+      45,
+      46,
+      47,
+      48,
+      49
+    ],
+    "seeds": {
+      "seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "role": "dev",
+      "report_only": false,
+      "dev_seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "reserved_gate_seeds": [
+        42,
+        43,
+        44
+      ],
+      "note": "dev seeds [45, 46, 47, 48, 49]: tuning only (no claim may be made from this run; it is not the reserved set)"
+    },
+    "init_seed": 42,
+    "max_jump_rate": 0.35,
+    "evidence_by_arm": {
+      "untrained": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "round1": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "round2": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "feedback": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      }
+    },
+    "evidence_override": {
+      "evidence_rule": "spike_sum",
+      "evidence_decay": 0.25,
+      "forced_on_every_arm": true
+    },
+    "decisions_per_replay": 99,
+    "teacher": {
+      "shards": 1,
+      "frames": 1477,
+      "max_x": 3243,
+      "required_jumps": 20,
+      "fall_windows": 4,
+      "reached_end": true,
+      "jump_rate": 0.2041
+    },
+    "thresholds": {
+      "min_jump_recall": 0.9,
+      "min_recall_delta": 0.1
+    },
+    "baseline": "untrained"
+  },
+  "table": [
+    {
+      "arm": "untrained",
+      "metric": "teacher_forced_sequence",
+      "replays": 5,
+      "replay_seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "seed_role": "dev",
+      "cadence": 15,
+      "settle_steps": 5,
+      "decoder": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25,
+        "jump_margin": 1.0,
+        "calibration": {
+          "margin": 1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.519,
+          "jump_recall": 0.192,
+          "run_recall": 0.8459,
+          "jump_rate": 0.1636,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        }
+      },
+      "evidence": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "per_replay": [
+        {
+          "replay_seed": 45,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 14,
+              "missed_jumps": 6,
+              "spurious_jumps": 7,
+              "jump_rate": 0.2727,
+              "jump_sequence_recall": 0.7,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 225,
+              "first_miss_x": 549,
+              "offline_best_x": 549,
+              "offline_completion": false,
+              "survival_frames": 225,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 549.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 14,
+          "missed_jumps": 6,
+          "spurious_jumps": 7,
+          "jump_sequence_recall": 0.7,
+          "jump_rate": 0.2121
+        },
+        {
+          "replay_seed": 46,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 13,
+              "missed_jumps": 7,
+              "spurious_jumps": 4,
+              "jump_rate": 0.2626,
+              "jump_sequence_recall": 0.65,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 150,
+              "first_miss_x": 362,
+              "offline_best_x": 362,
+              "offline_completion": false,
+              "survival_frames": 150,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 362.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 13,
+          "missed_jumps": 7,
+          "spurious_jumps": 4,
+          "jump_sequence_recall": 0.65,
+          "jump_rate": 0.1717
+        },
+        {
+          "replay_seed": 47,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 14,
+              "missed_jumps": 6,
+              "spurious_jumps": 3,
+              "jump_rate": 0.2828,
+              "jump_sequence_recall": 0.7,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 14,
+          "missed_jumps": 6,
+          "spurious_jumps": 3,
+          "jump_sequence_recall": 0.7,
+          "jump_rate": 0.1717
+        },
+        {
+          "replay_seed": 48,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 14,
+              "missed_jumps": 6,
+              "spurious_jumps": 6,
+              "jump_rate": 0.303,
+              "jump_sequence_recall": 0.7,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 14,
+          "missed_jumps": 6,
+          "spurious_jumps": 6,
+          "jump_sequence_recall": 0.7,
+          "jump_rate": 0.202
+        },
+        {
+          "replay_seed": 49,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 11,
+              "missed_jumps": 9,
+              "spurious_jumps": 9,
+              "jump_rate": 0.2727,
+              "jump_sequence_recall": 0.55,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 11,
+          "missed_jumps": 9,
+          "spurious_jumps": 9,
+          "jump_sequence_recall": 0.55,
+          "jump_rate": 0.202
+        }
+      ],
+      "jump_sequence_recall": {
+        "values": [
+          0.7,
+          0.65,
+          0.7,
+          0.7,
+          0.55
+        ],
+        "mean": 0.66,
+        "min": 0.55,
+        "max": 0.7
+      },
+      "offline_best_x": {
+        "values": [
+          549.0,
+          362.0,
+          249.0,
+          249.0,
+          249.0
+        ],
+        "mean": 331.6,
+        "min": 249.0,
+        "max": 549.0
+      },
+      "offline_completion_rate": 0.0,
+      "missed_jumps": {
+        "values": [
+          6.0,
+          7.0,
+          6.0,
+          6.0,
+          9.0
+        ],
+        "mean": 6.8,
+        "min": 6.0,
+        "max": 9.0
+      },
+      "spurious_jumps": {
+        "values": [
+          7.0,
+          4.0,
+          3.0,
+          6.0,
+          9.0
+        ],
+        "mean": 5.8,
+        "min": 3.0,
+        "max": 9.0
+      },
+      "required_jumps": {
+        "values": [
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        "mean": 20.0,
+        "min": 20.0,
+        "max": 20.0
+      },
+      "jump_rate": {
+        "values": [
+          0.2121,
+          0.1717,
+          0.1717,
+          0.202,
+          0.202
+        ],
+        "mean": 0.1919,
+        "min": 0.1717,
+        "max": 0.2121
+      },
+      "teacher": {
+        "shards": 1,
+        "frames": 1477,
+        "max_x": 3243,
+        "required_jumps": 20,
+        "fall_windows": 4,
+        "reached_end": true,
+        "jump_rate": 0.2041
+      },
+      "detail": {
+        "role": "untrained_baseline"
+      },
+      "margin_source": {
+        "source": "recalibrated_for_evidence_rule",
+        "rule": "spike_sum",
+        "margin": 1.0,
+        "shipped_rule": null,
+        "shipped_margin": null,
+        "override": "spike_sum",
+        "calibration": {
+          "margin": 1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.519,
+          "jump_recall": 0.192,
+          "run_recall": 0.8459,
+          "jump_rate": 0.1636,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+      },
+      "budget": {
+        "arm": "untrained",
+        "stride": 15,
+        "settle_steps": 5,
+        "replays": 5,
+        "replay_seeds": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "decisions_per_replay": 99,
+        "max_jump_rate": 0.35,
+        "per_replay": [
+          {
+            "replay_seed": 45,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.44,
+            "jump_chunks_caught": 11,
+            "precision": 0.3235,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0966,
+            "margin": 0.0,
+            "margin_jump_rate": 0.2525,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5724,
+              "jump_recall": 0.28,
+              "run_recall": 0.8649,
+              "jump_rate": 0.1717,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 46,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.36,
+            "jump_chunks_caught": 9,
+            "precision": 0.2647,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0166,
+            "margin": 0.0,
+            "margin_jump_rate": 0.303,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.4651,
+              "jump_recall": 0.16,
+              "run_recall": 0.7703,
+              "jump_rate": 0.2121,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 47,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.2323,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.4992,
+              "jump_recall": 0.12,
+              "run_recall": 0.8784,
+              "jump_rate": 0.1212,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 48,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.32,
+            "jump_chunks_caught": 8,
+            "precision": 0.2353,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0234,
+            "margin": 0.0,
+            "margin_jump_rate": 0.202,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5127,
+              "jump_recall": 0.12,
+              "run_recall": 0.9054,
+              "jump_rate": 0.101,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 49,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.4,
+            "jump_chunks_caught": 10,
+            "precision": 0.2941,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0566,
+            "margin": 0.0,
+            "margin_jump_rate": 0.3131,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5454,
+              "jump_recall": 0.28,
+              "run_recall": 0.8108,
+              "jump_rate": 0.2121,
+              "target_jump_rate": 0.2525
+            }
+          }
+        ],
+        "jump_recall": {
+          "values": [
+            0.44,
+            0.36,
+            0.28,
+            0.32,
+            0.4
+          ],
+          "mean": 0.36,
+          "min": 0.28,
+          "max": 0.44
+        },
+        "jump_rate": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "random_recall": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "lift_over_random": {
+          "values": [
+            0.0966,
+            0.0166,
+            -0.0634,
+            -0.0234,
+            0.0566
+          ],
+          "mean": 0.0166,
+          "min": -0.0634,
+          "max": 0.0966
+        },
+        "pooled": {
+          "metric": "jump_recall_at_bounded_rate",
+          "method": "bounded_jump_rate",
+          "max_jump_rate": 0.35,
+          "chunks": 495,
+          "jump_chunks": 125,
+          "budget_chunks": 173,
+          "jump_rate": 0.3495,
+          "teacher_jump_rate": 0.2525,
+          "jump_recall": 0.368,
+          "jump_chunks_caught": 46,
+          "precision": 0.2659,
+          "random_recall": 0.3495,
+          "lift_over_random": 0.0185,
+          "margin": 0.0,
+          "margin_jump_rate": 0.2606
+        },
+        "detail": {
+          "role": "untrained_baseline"
+        },
+        "margin": 1.0,
+        "at_margin": {
+          "margin": 1.0,
+          "method": "fixed_margin",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.519,
+          "jump_recall": 0.192,
+          "run_recall": 0.8459,
+          "jump_rate": 0.1636,
+          "target_jump_rate": 0.2525
+        },
+        "evidence": {
+          "evidence_rule": "spike_sum",
+          "evidence_decay": 0.25
+        },
+        "margin_source": {
+          "source": "recalibrated_for_evidence_rule",
+          "rule": "spike_sum",
+          "margin": 1.0,
+          "shipped_rule": null,
+          "shipped_margin": null,
+          "override": "spike_sum",
+          "calibration": {
+            "margin": 1.0,
+            "method": "balanced_accuracy",
+            "samples": 495,
+            "jump_samples": 125,
+            "balanced_accuracy": 0.519,
+            "jump_recall": 0.192,
+            "run_recall": 0.8459,
+            "jump_rate": 0.1636,
+            "target_jump_rate": 0.2525,
+            "degenerate": false,
+            "degenerate_reason": null,
+            "replays": 5,
+            "replay_seeds": [
+              45,
+              46,
+              47,
+              48,
+              49
+            ],
+            "decisions_per_replay": 99
+          },
+          "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+        }
+      },
+      "role": "untrained_baseline"
+    },
+    {
+      "arm": "round1",
+      "metric": "teacher_forced_sequence",
+      "replays": 5,
+      "replay_seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "seed_role": "dev",
+      "cadence": 15,
+      "settle_steps": 5,
+      "decoder": {
+        "decoder": "bounded_macro_action",
+        "chunk_frames": 15,
+        "jump_chunk_frames": 15,
+        "jump_margin": -2.0,
+        "refractory_frames": 0,
+        "max_chunk_frames": 30,
+        "calibration": {
+          "margin": -2.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6152,
+          "jump_recall": 0.744,
+          "run_recall": 0.4865,
+          "jump_rate": 0.5717,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "evidence": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "per_replay": [
+        {
+          "replay_seed": 45,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 17,
+              "missed_jumps": 3,
+              "spurious_jumps": 12,
+              "jump_rate": 0.4343,
+              "jump_sequence_recall": 0.85,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 885,
+              "first_miss_x": 2125,
+              "offline_best_x": 2125,
+              "offline_completion": false,
+              "survival_frames": 885,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 2125.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 17,
+          "missed_jumps": 3,
+          "spurious_jumps": 12,
+          "jump_sequence_recall": 0.85,
+          "jump_rate": 0.2929
+        },
+        {
+          "replay_seed": 46,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 17,
+              "missed_jumps": 3,
+              "spurious_jumps": 13,
+              "jump_rate": 0.4242,
+              "jump_sequence_recall": 0.85,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 735,
+              "first_miss_x": 1750,
+              "offline_best_x": 1750,
+              "offline_completion": false,
+              "survival_frames": 735,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 1750.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 17,
+          "missed_jumps": 3,
+          "spurious_jumps": 13,
+          "jump_sequence_recall": 0.85,
+          "jump_rate": 0.303
+        },
+        {
+          "replay_seed": 47,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 18,
+              "missed_jumps": 2,
+              "spurious_jumps": 12,
+              "jump_rate": 0.4141,
+              "jump_sequence_recall": 0.9,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 465,
+              "first_miss_x": 1075,
+              "offline_best_x": 1075,
+              "offline_completion": false,
+              "survival_frames": 465,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 1075.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 18,
+          "missed_jumps": 2,
+          "spurious_jumps": 12,
+          "jump_sequence_recall": 0.9,
+          "jump_rate": 0.303
+        },
+        {
+          "replay_seed": 48,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 16,
+              "missed_jumps": 4,
+              "spurious_jumps": 9,
+              "jump_rate": 0.3939,
+              "jump_sequence_recall": 0.8,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 225,
+              "first_miss_x": 549,
+              "offline_best_x": 549,
+              "offline_completion": false,
+              "survival_frames": 225,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 549.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 16,
+          "missed_jumps": 4,
+          "spurious_jumps": 9,
+          "jump_sequence_recall": 0.8,
+          "jump_rate": 0.2525
+        },
+        {
+          "replay_seed": 49,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 16,
+              "missed_jumps": 4,
+              "spurious_jumps": 14,
+              "jump_rate": 0.4444,
+              "jump_sequence_recall": 0.8,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 360,
+              "first_miss_x": 887,
+              "offline_best_x": 887,
+              "offline_completion": false,
+              "survival_frames": 360,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 887.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 16,
+          "missed_jumps": 4,
+          "spurious_jumps": 14,
+          "jump_sequence_recall": 0.8,
+          "jump_rate": 0.303
+        }
+      ],
+      "jump_sequence_recall": {
+        "values": [
+          0.85,
+          0.85,
+          0.9,
+          0.8,
+          0.8
+        ],
+        "mean": 0.84,
+        "min": 0.8,
+        "max": 0.9
+      },
+      "offline_best_x": {
+        "values": [
+          2125.0,
+          1750.0,
+          1075.0,
+          549.0,
+          887.0
+        ],
+        "mean": 1277.2,
+        "min": 549.0,
+        "max": 2125.0
+      },
+      "offline_completion_rate": 0.0,
+      "missed_jumps": {
+        "values": [
+          3.0,
+          3.0,
+          2.0,
+          4.0,
+          4.0
+        ],
+        "mean": 3.2,
+        "min": 2.0,
+        "max": 4.0
+      },
+      "spurious_jumps": {
+        "values": [
+          12.0,
+          13.0,
+          12.0,
+          9.0,
+          14.0
+        ],
+        "mean": 12.0,
+        "min": 9.0,
+        "max": 14.0
+      },
+      "required_jumps": {
+        "values": [
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        "mean": 20.0,
+        "min": 20.0,
+        "max": 20.0
+      },
+      "jump_rate": {
+        "values": [
+          0.2929,
+          0.303,
+          0.303,
+          0.2525,
+          0.303
+        ],
+        "mean": 0.2909,
+        "min": 0.2525,
+        "max": 0.303
+      },
+      "teacher": {
+        "shards": 1,
+        "frames": 1477,
+        "max_x": 3243,
+        "required_jumps": 20,
+        "fall_windows": 4,
+        "reached_end": true,
+        "jump_rate": 0.2041
+      },
+      "detail": {
+        "checkpoint": "/app/runs/closed_loop_dagger/iter-01/checkpoint.pth",
+        "visual_pathway": null,
+        "epochs": 30,
+        "learning_rate": 0.0005,
+        "jump_margin": -2.0,
+        "refractory_frames": 0,
+        "weight_deltas": null
+      },
+      "margin_source": {
+        "source": "recalibrated_for_evidence_rule",
+        "rule": "spike_sum",
+        "margin": -2.0,
+        "shipped_rule": null,
+        "shipped_margin": -2.0,
+        "override": "spike_sum",
+        "calibration": {
+          "margin": -2.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6152,
+          "jump_recall": 0.744,
+          "run_recall": 0.4865,
+          "jump_rate": 0.5717,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+      },
+      "budget": {
+        "arm": "round1",
+        "stride": 15,
+        "settle_steps": 5,
+        "replays": 5,
+        "replay_seeds": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "decisions_per_replay": 99,
+        "max_jump_rate": 0.35,
+        "per_replay": [
+          {
+            "replay_seed": 45,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.56,
+            "jump_chunks_caught": 14,
+            "precision": 0.4118,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.2166,
+            "margin": 0.0,
+            "margin_jump_rate": 0.3333,
+            "at_margin": {
+              "margin": -2.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.6768,
+              "jump_recall": 0.84,
+              "run_recall": 0.5135,
+              "jump_rate": 0.5758,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 46,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.52,
+            "jump_chunks_caught": 13,
+            "precision": 0.3824,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.1766,
+            "margin": 1.0,
+            "margin_jump_rate": 0.2424,
+            "at_margin": {
+              "margin": -2.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5759,
+              "jump_recall": 0.76,
+              "run_recall": 0.3919,
+              "jump_rate": 0.6465,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 47,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.6,
+            "jump_chunks_caught": 15,
+            "precision": 0.4412,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.2566,
+            "margin": 1.0,
+            "margin_jump_rate": 0.2626,
+            "at_margin": {
+              "margin": -2.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.61,
+              "jump_recall": 0.72,
+              "run_recall": 0.5,
+              "jump_rate": 0.5556,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 48,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.44,
+            "jump_chunks_caught": 11,
+            "precision": 0.3235,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0966,
+            "margin": 0.5,
+            "margin_jump_rate": 0.3434,
+            "at_margin": {
+              "margin": -2.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.6835,
+              "jump_recall": 0.84,
+              "run_recall": 0.527,
+              "jump_rate": 0.5657,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 49,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.36,
+            "jump_chunks_caught": 9,
+            "precision": 0.2647,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0166,
+            "margin": 0.0,
+            "margin_jump_rate": 0.2929,
+            "at_margin": {
+              "margin": -2.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.53,
+              "jump_recall": 0.56,
+              "run_recall": 0.5,
+              "jump_rate": 0.5152,
+              "target_jump_rate": 0.2525
+            }
+          }
+        ],
+        "jump_recall": {
+          "values": [
+            0.56,
+            0.52,
+            0.6,
+            0.44,
+            0.36
+          ],
+          "mean": 0.496,
+          "min": 0.36,
+          "max": 0.6
+        },
+        "jump_rate": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "random_recall": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "lift_over_random": {
+          "values": [
+            0.2166,
+            0.1766,
+            0.2566,
+            0.0966,
+            0.0166
+          ],
+          "mean": 0.1526,
+          "min": 0.0166,
+          "max": 0.2566
+        },
+        "pooled": {
+          "metric": "jump_recall_at_bounded_rate",
+          "method": "bounded_jump_rate",
+          "max_jump_rate": 0.35,
+          "chunks": 495,
+          "jump_chunks": 125,
+          "budget_chunks": 173,
+          "jump_rate": 0.3495,
+          "teacher_jump_rate": 0.2525,
+          "jump_recall": 0.496,
+          "jump_chunks_caught": 62,
+          "precision": 0.3584,
+          "random_recall": 0.3495,
+          "lift_over_random": 0.1465,
+          "margin": 0.5,
+          "margin_jump_rate": 0.3495
+        },
+        "detail": {
+          "checkpoint": "/app/runs/closed_loop_dagger/iter-01/checkpoint.pth",
+          "visual_pathway": null,
+          "epochs": 30,
+          "learning_rate": 0.0005,
+          "jump_margin": -2.0,
+          "refractory_frames": 0,
+          "weight_deltas": null
+        },
+        "margin": -2.0,
+        "at_margin": {
+          "margin": -2.0,
+          "method": "fixed_margin",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6152,
+          "jump_recall": 0.744,
+          "run_recall": 0.4865,
+          "jump_rate": 0.5717,
+          "target_jump_rate": 0.2525
+        },
+        "evidence": {
+          "evidence_rule": "spike_sum",
+          "evidence_decay": 0.25
+        },
+        "margin_source": {
+          "source": "recalibrated_for_evidence_rule",
+          "rule": "spike_sum",
+          "margin": -2.0,
+          "shipped_rule": null,
+          "shipped_margin": -2.0,
+          "override": "spike_sum",
+          "calibration": {
+            "margin": -2.0,
+            "method": "balanced_accuracy",
+            "samples": 495,
+            "jump_samples": 125,
+            "balanced_accuracy": 0.6152,
+            "jump_recall": 0.744,
+            "run_recall": 0.4865,
+            "jump_rate": 0.5717,
+            "target_jump_rate": 0.2525,
+            "degenerate": false,
+            "degenerate_reason": null,
+            "replays": 5,
+            "replay_seeds": [
+              45,
+              46,
+              47,
+              48,
+              49
+            ],
+            "decisions_per_replay": 99
+          },
+          "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+        }
+      },
+      "role": "candidate"
+    },
+    {
+      "arm": "round2",
+      "metric": "teacher_forced_sequence",
+      "replays": 5,
+      "replay_seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "seed_role": "dev",
+      "cadence": 15,
+      "settle_steps": 5,
+      "decoder": {
+        "decoder": "bounded_macro_action",
+        "chunk_frames": 15,
+        "jump_chunk_frames": 15,
+        "jump_margin": 1.0,
+        "refractory_frames": 0,
+        "max_chunk_frames": 30,
+        "calibration": {
+          "margin": 1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6143,
+          "jump_recall": 0.488,
+          "run_recall": 0.7405,
+          "jump_rate": 0.3172,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "evidence": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "per_replay": [
+        {
+          "replay_seed": 45,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 16,
+              "missed_jumps": 4,
+              "spurious_jumps": 3,
+              "jump_rate": 0.2626,
+              "jump_sequence_recall": 0.8,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 16,
+          "missed_jumps": 4,
+          "spurious_jumps": 3,
+          "jump_sequence_recall": 0.8,
+          "jump_rate": 0.1919
+        },
+        {
+          "replay_seed": 46,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 6,
+              "missed_jumps": 14,
+              "spurious_jumps": 3,
+              "jump_rate": 0.1313,
+              "jump_sequence_recall": 0.3,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 6,
+          "missed_jumps": 14,
+          "spurious_jumps": 3,
+          "jump_sequence_recall": 0.3,
+          "jump_rate": 0.0909
+        },
+        {
+          "replay_seed": 47,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 8,
+              "missed_jumps": 12,
+              "spurious_jumps": 5,
+              "jump_rate": 0.1414,
+              "jump_sequence_recall": 0.4,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 8,
+          "missed_jumps": 12,
+          "spurious_jumps": 5,
+          "jump_sequence_recall": 0.4,
+          "jump_rate": 0.1313
+        },
+        {
+          "replay_seed": 48,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 8,
+              "missed_jumps": 12,
+              "spurious_jumps": 5,
+              "jump_rate": 0.1616,
+              "jump_sequence_recall": 0.4,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 225,
+              "first_miss_x": 549,
+              "offline_best_x": 549,
+              "offline_completion": false,
+              "survival_frames": 225,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 549.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 8,
+          "missed_jumps": 12,
+          "spurious_jumps": 5,
+          "jump_sequence_recall": 0.4,
+          "jump_rate": 0.1313
+        },
+        {
+          "replay_seed": 49,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 14,
+              "missed_jumps": 6,
+              "spurious_jumps": 10,
+              "jump_rate": 0.2828,
+              "jump_sequence_recall": 0.7,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": 105,
+              "first_miss_x": 249,
+              "offline_best_x": 249,
+              "offline_completion": false,
+              "survival_frames": 105,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 249.0,
+          "offline_completion": false,
+          "required_jumps": 20,
+          "jumps_taken": 14,
+          "missed_jumps": 6,
+          "spurious_jumps": 10,
+          "jump_sequence_recall": 0.7,
+          "jump_rate": 0.2424
+        }
+      ],
+      "jump_sequence_recall": {
+        "values": [
+          0.8,
+          0.3,
+          0.4,
+          0.4,
+          0.7
+        ],
+        "mean": 0.52,
+        "min": 0.3,
+        "max": 0.8
+      },
+      "offline_best_x": {
+        "values": [
+          249.0,
+          249.0,
+          249.0,
+          549.0,
+          249.0
+        ],
+        "mean": 309.0,
+        "min": 249.0,
+        "max": 549.0
+      },
+      "offline_completion_rate": 0.0,
+      "missed_jumps": {
+        "values": [
+          4.0,
+          14.0,
+          12.0,
+          12.0,
+          6.0
+        ],
+        "mean": 9.6,
+        "min": 4.0,
+        "max": 14.0
+      },
+      "spurious_jumps": {
+        "values": [
+          3.0,
+          3.0,
+          5.0,
+          5.0,
+          10.0
+        ],
+        "mean": 5.2,
+        "min": 3.0,
+        "max": 10.0
+      },
+      "required_jumps": {
+        "values": [
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        "mean": 20.0,
+        "min": 20.0,
+        "max": 20.0
+      },
+      "jump_rate": {
+        "values": [
+          0.1919,
+          0.0909,
+          0.1313,
+          0.1313,
+          0.2424
+        ],
+        "mean": 0.1576,
+        "min": 0.0909,
+        "max": 0.2424
+      },
+      "teacher": {
+        "shards": 1,
+        "frames": 1477,
+        "max_x": 3243,
+        "required_jumps": 20,
+        "fall_windows": 4,
+        "reached_end": true,
+        "jump_rate": 0.2041
+      },
+      "detail": {
+        "checkpoint": "/app/runs/closed_loop_dagger/round2/iter-01/checkpoint.pth",
+        "visual_pathway": null,
+        "epochs": 30,
+        "learning_rate": 0.0005,
+        "jump_margin": -1.0,
+        "refractory_frames": 0,
+        "weight_deltas": null
+      },
+      "margin_source": {
+        "source": "recalibrated_for_evidence_rule",
+        "rule": "spike_sum",
+        "margin": 1.0,
+        "shipped_rule": null,
+        "shipped_margin": -1.0,
+        "override": "spike_sum",
+        "calibration": {
+          "margin": 1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6143,
+          "jump_recall": 0.488,
+          "run_recall": 0.7405,
+          "jump_rate": 0.3172,
+          "target_jump_rate": 0.2525,
+          "degenerate": false,
+          "degenerate_reason": null,
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+      },
+      "budget": {
+        "arm": "round2",
+        "stride": 15,
+        "settle_steps": 5,
+        "replays": 5,
+        "replay_seeds": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "decisions_per_replay": 99,
+        "max_jump_rate": 0.35,
+        "per_replay": [
+          {
+            "replay_seed": 45,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.6,
+            "jump_chunks_caught": 15,
+            "precision": 0.4412,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.2566,
+            "margin": 2.0,
+            "margin_jump_rate": 0.2626,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.6916,
+              "jump_recall": 0.64,
+              "run_recall": 0.7432,
+              "jump_rate": 0.3535,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 46,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.48,
+            "jump_chunks_caught": 12,
+            "precision": 0.3529,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.1366,
+            "margin": 2.0,
+            "margin_jump_rate": 0.1919,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5978,
+              "jump_recall": 0.52,
+              "run_recall": 0.6757,
+              "jump_rate": 0.3737,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 47,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.56,
+            "jump_chunks_caught": 14,
+            "precision": 0.4118,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.2166,
+            "margin": 1.0,
+            "margin_jump_rate": 0.3333,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.6516,
+              "jump_recall": 0.56,
+              "run_recall": 0.7432,
+              "jump_rate": 0.3333,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 48,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.44,
+            "jump_chunks_caught": 11,
+            "precision": 0.3235,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0966,
+            "margin": 1.0,
+            "margin_jump_rate": 0.3333,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5714,
+              "jump_recall": 0.44,
+              "run_recall": 0.7027,
+              "jump_rate": 0.3333,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 49,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.44,
+            "jump_chunks_caught": 11,
+            "precision": 0.3235,
+            "random_recall": 0.3434,
+            "lift_over_random": 0.0966,
+            "margin": 1.0,
+            "margin_jump_rate": 0.1919,
+            "at_margin": {
+              "margin": 1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5589,
+              "jump_recall": 0.28,
+              "run_recall": 0.8378,
+              "jump_rate": 0.1919,
+              "target_jump_rate": 0.2525
+            }
+          }
+        ],
+        "jump_recall": {
+          "values": [
+            0.6,
+            0.48,
+            0.56,
+            0.44,
+            0.44
+          ],
+          "mean": 0.504,
+          "min": 0.44,
+          "max": 0.6
+        },
+        "jump_rate": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "random_recall": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "lift_over_random": {
+          "values": [
+            0.2566,
+            0.1366,
+            0.2166,
+            0.0966,
+            0.0966
+          ],
+          "mean": 0.1606,
+          "min": 0.0966,
+          "max": 0.2566
+        },
+        "pooled": {
+          "metric": "jump_recall_at_bounded_rate",
+          "method": "bounded_jump_rate",
+          "max_jump_rate": 0.35,
+          "chunks": 495,
+          "jump_chunks": 125,
+          "budget_chunks": 173,
+          "jump_rate": 0.3495,
+          "teacher_jump_rate": 0.2525,
+          "jump_recall": 0.496,
+          "jump_chunks_caught": 62,
+          "precision": 0.3584,
+          "random_recall": 0.3495,
+          "lift_over_random": 0.1465,
+          "margin": 1.0,
+          "margin_jump_rate": 0.3172
+        },
+        "detail": {
+          "checkpoint": "/app/runs/closed_loop_dagger/round2/iter-01/checkpoint.pth",
+          "visual_pathway": null,
+          "epochs": 30,
+          "learning_rate": 0.0005,
+          "jump_margin": -1.0,
+          "refractory_frames": 0,
+          "weight_deltas": null
+        },
+        "margin": 1.0,
+        "at_margin": {
+          "margin": 1.0,
+          "method": "fixed_margin",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.6143,
+          "jump_recall": 0.488,
+          "run_recall": 0.7405,
+          "jump_rate": 0.3172,
+          "target_jump_rate": 0.2525
+        },
+        "evidence": {
+          "evidence_rule": "spike_sum",
+          "evidence_decay": 0.25
+        },
+        "margin_source": {
+          "source": "recalibrated_for_evidence_rule",
+          "rule": "spike_sum",
+          "margin": 1.0,
+          "shipped_rule": null,
+          "shipped_margin": -1.0,
+          "override": "spike_sum",
+          "calibration": {
+            "margin": 1.0,
+            "method": "balanced_accuracy",
+            "samples": 495,
+            "jump_samples": 125,
+            "balanced_accuracy": 0.6143,
+            "jump_recall": 0.488,
+            "run_recall": 0.7405,
+            "jump_rate": 0.3172,
+            "target_jump_rate": 0.2525,
+            "degenerate": false,
+            "degenerate_reason": null,
+            "replays": 5,
+            "replay_seeds": [
+              45,
+              46,
+              47,
+              48,
+              49
+            ],
+            "decisions_per_replay": 99
+          },
+          "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+        }
+      },
+      "role": "candidate"
+    },
+    {
+      "arm": "feedback",
+      "metric": "teacher_forced_sequence",
+      "replays": 5,
+      "replay_seeds": [
+        45,
+        46,
+        47,
+        48,
+        49
+      ],
+      "seed_role": "dev",
+      "cadence": 15,
+      "settle_steps": 5,
+      "decoder": {
+        "decoder": "bounded_macro_action",
+        "chunk_frames": 15,
+        "jump_chunk_frames": 15,
+        "jump_margin": -1.0,
+        "refractory_frames": 0,
+        "max_chunk_frames": 30,
+        "calibration": {
+          "margin": -1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.5,
+          "jump_recall": 1.0,
+          "run_recall": 0.0,
+          "jump_rate": 1.0,
+          "target_jump_rate": 0.2525,
+          "degenerate": true,
+          "degenerate_reason": "no boundary beats the constant rules: the evidence does not separate the two chunk classes, so this margin is not a decision criterion",
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "evidence": {
+        "evidence_rule": "spike_sum",
+        "evidence_decay": 0.25
+      },
+      "per_replay": [
+        {
+          "replay_seed": 45,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 20,
+              "missed_jumps": 0,
+              "spurious_jumps": 29,
+              "jump_rate": 1.0,
+              "jump_sequence_recall": 1.0,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": null,
+              "first_miss_x": null,
+              "offline_best_x": 3243,
+              "offline_completion": true,
+              "survival_frames": 1477,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 3243.0,
+          "offline_completion": true,
+          "required_jumps": 20,
+          "jumps_taken": 20,
+          "missed_jumps": 0,
+          "spurious_jumps": 29,
+          "jump_sequence_recall": 1.0,
+          "jump_rate": 0.4949
+        },
+        {
+          "replay_seed": 46,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 20,
+              "missed_jumps": 0,
+              "spurious_jumps": 29,
+              "jump_rate": 1.0,
+              "jump_sequence_recall": 1.0,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": null,
+              "first_miss_x": null,
+              "offline_best_x": 3243,
+              "offline_completion": true,
+              "survival_frames": 1477,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 3243.0,
+          "offline_completion": true,
+          "required_jumps": 20,
+          "jumps_taken": 20,
+          "missed_jumps": 0,
+          "spurious_jumps": 29,
+          "jump_sequence_recall": 1.0,
+          "jump_rate": 0.4949
+        },
+        {
+          "replay_seed": 47,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 20,
+              "missed_jumps": 0,
+              "spurious_jumps": 29,
+              "jump_rate": 1.0,
+              "jump_sequence_recall": 1.0,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": null,
+              "first_miss_x": null,
+              "offline_best_x": 3243,
+              "offline_completion": true,
+              "survival_frames": 1477,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 3243.0,
+          "offline_completion": true,
+          "required_jumps": 20,
+          "jumps_taken": 20,
+          "missed_jumps": 0,
+          "spurious_jumps": 29,
+          "jump_sequence_recall": 1.0,
+          "jump_rate": 0.4949
+        },
+        {
+          "replay_seed": 48,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 20,
+              "missed_jumps": 0,
+              "spurious_jumps": 29,
+              "jump_rate": 1.0,
+              "jump_sequence_recall": 1.0,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": null,
+              "first_miss_x": null,
+              "offline_best_x": 3243,
+              "offline_completion": true,
+              "survival_frames": 1477,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 3243.0,
+          "offline_completion": true,
+          "required_jumps": 20,
+          "jumps_taken": 20,
+          "missed_jumps": 0,
+          "spurious_jumps": 29,
+          "jump_sequence_recall": 1.0,
+          "jump_rate": 0.4949
+        },
+        {
+          "replay_seed": 49,
+          "shards": 1,
+          "outcomes": [
+            {
+              "decisions": 99,
+              "required_jumps": 20,
+              "jumps_taken": 20,
+              "missed_jumps": 0,
+              "spurious_jumps": 29,
+              "jump_rate": 1.0,
+              "jump_sequence_recall": 1.0,
+              "fatality_model": "any_missed_teacher_jump_ends_run",
+              "first_miss_frame": null,
+              "first_miss_x": null,
+              "offline_best_x": 3243,
+              "offline_completion": true,
+              "survival_frames": 1477,
+              "teacher_frames": 1477,
+              "teacher_max_x": 3243,
+              "fall_windows": 4
+            }
+          ],
+          "decisions": [
+            99
+          ],
+          "offline_best_x": 3243.0,
+          "offline_completion": true,
+          "required_jumps": 20,
+          "jumps_taken": 20,
+          "missed_jumps": 0,
+          "spurious_jumps": 29,
+          "jump_sequence_recall": 1.0,
+          "jump_rate": 0.4949
+        }
+      ],
+      "jump_sequence_recall": {
+        "values": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "mean": 1.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "offline_best_x": {
+        "values": [
+          3243.0,
+          3243.0,
+          3243.0,
+          3243.0,
+          3243.0
+        ],
+        "mean": 3243.0,
+        "min": 3243.0,
+        "max": 3243.0
+      },
+      "offline_completion_rate": 1.0,
+      "missed_jumps": {
+        "values": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mean": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "spurious_jumps": {
+        "values": [
+          29.0,
+          29.0,
+          29.0,
+          29.0,
+          29.0
+        ],
+        "mean": 29.0,
+        "min": 29.0,
+        "max": 29.0
+      },
+      "required_jumps": {
+        "values": [
+          20.0,
+          20.0,
+          20.0,
+          20.0,
+          20.0
+        ],
+        "mean": 20.0,
+        "min": 20.0,
+        "max": 20.0
+      },
+      "jump_rate": {
+        "values": [
+          0.4949,
+          0.4949,
+          0.4949,
+          0.4949,
+          0.4949
+        ],
+        "mean": 0.4949,
+        "min": 0.4949,
+        "max": 0.4949
+      },
+      "teacher": {
+        "shards": 1,
+        "frames": 1477,
+        "max_x": 3243,
+        "required_jumps": 20,
+        "fall_windows": 4,
+        "reached_end": true,
+        "jump_rate": 0.2041
+      },
+      "detail": {
+        "checkpoint": "/app/runs/prescreen/feedback.pth",
+        "visual_pathway": "linear_feedback",
+        "epochs": 30,
+        "learning_rate": 0.0005,
+        "jump_margin": -1.0,
+        "refractory_frames": 0,
+        "weight_deltas": {
+          "layer3_4": {
+            "l2_delta": 61.500095,
+            "l2_initial": 6.124972,
+            "relative": 10.040878
+          },
+          "layer2_3": {
+            "l2_delta": 542.426331,
+            "l2_initial": 15.93449,
+            "relative": 34.041022
+          },
+          "layer1_2": {
+            "l2_delta": 2857.741699,
+            "l2_initial": 25.028206,
+            "relative": 114.180845
+          },
+          "feedback_3_2": {
+            "l2_delta": 543.217651,
+            "l2_initial": 22.487244,
+            "relative": 24.156702
+          }
+        }
+      },
+      "margin_source": {
+        "source": "recalibrated_for_evidence_rule",
+        "rule": "spike_sum",
+        "margin": -1.0,
+        "shipped_rule": null,
+        "shipped_margin": -1.0,
+        "override": "spike_sum",
+        "calibration": {
+          "margin": -1.0,
+          "method": "balanced_accuracy",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.5,
+          "jump_recall": 1.0,
+          "run_recall": 0.0,
+          "jump_rate": 1.0,
+          "target_jump_rate": 0.2525,
+          "degenerate": true,
+          "degenerate_reason": "no boundary beats the constant rules: the evidence does not separate the two chunk classes, so this margin is not a decision criterion",
+          "replays": 5,
+          "replay_seeds": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "decisions_per_replay": 99
+        },
+        "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+      },
+      "budget": {
+        "arm": "feedback",
+        "stride": 15,
+        "settle_steps": 5,
+        "replays": 5,
+        "replay_seeds": [
+          45,
+          46,
+          47,
+          48,
+          49
+        ],
+        "decisions_per_replay": 99,
+        "max_jump_rate": 0.35,
+        "per_replay": [
+          {
+            "replay_seed": 45,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.0,
+            "at_margin": {
+              "margin": -1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5,
+              "jump_recall": 1.0,
+              "run_recall": 0.0,
+              "jump_rate": 1.0,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 46,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.0,
+            "at_margin": {
+              "margin": -1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5,
+              "jump_recall": 1.0,
+              "run_recall": 0.0,
+              "jump_rate": 1.0,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 47,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.0,
+            "at_margin": {
+              "margin": -1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5,
+              "jump_recall": 1.0,
+              "run_recall": 0.0,
+              "jump_rate": 1.0,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 48,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.0,
+            "at_margin": {
+              "margin": -1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5,
+              "jump_recall": 1.0,
+              "run_recall": 0.0,
+              "jump_rate": 1.0,
+              "target_jump_rate": 0.2525
+            }
+          },
+          {
+            "replay_seed": 49,
+            "chunks": 99,
+            "jump_chunks": 25,
+            "metric": "jump_recall_at_bounded_rate",
+            "method": "bounded_jump_rate",
+            "max_jump_rate": 0.35,
+            "budget_chunks": 34,
+            "jump_rate": 0.3434,
+            "teacher_jump_rate": 0.2525,
+            "jump_recall": 0.28,
+            "jump_chunks_caught": 7,
+            "precision": 0.2059,
+            "random_recall": 0.3434,
+            "lift_over_random": -0.0634,
+            "margin": 0.0,
+            "margin_jump_rate": 0.0,
+            "at_margin": {
+              "margin": -1.0,
+              "method": "fixed_margin",
+              "samples": 99,
+              "jump_samples": 25,
+              "balanced_accuracy": 0.5,
+              "jump_recall": 1.0,
+              "run_recall": 0.0,
+              "jump_rate": 1.0,
+              "target_jump_rate": 0.2525
+            }
+          }
+        ],
+        "jump_recall": {
+          "values": [
+            0.28,
+            0.28,
+            0.28,
+            0.28,
+            0.28
+          ],
+          "mean": 0.28,
+          "min": 0.28,
+          "max": 0.28
+        },
+        "jump_rate": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "random_recall": {
+          "values": [
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434,
+            0.3434
+          ],
+          "mean": 0.3434,
+          "min": 0.3434,
+          "max": 0.3434
+        },
+        "lift_over_random": {
+          "values": [
+            -0.0634,
+            -0.0634,
+            -0.0634,
+            -0.0634,
+            -0.0634
+          ],
+          "mean": -0.0634,
+          "min": -0.0634,
+          "max": -0.0634
+        },
+        "pooled": {
+          "metric": "jump_recall_at_bounded_rate",
+          "method": "bounded_jump_rate",
+          "max_jump_rate": 0.35,
+          "chunks": 495,
+          "jump_chunks": 125,
+          "budget_chunks": 173,
+          "jump_rate": 0.3495,
+          "teacher_jump_rate": 0.2525,
+          "jump_recall": 0.344,
+          "jump_chunks_caught": 43,
+          "precision": 0.2486,
+          "random_recall": 0.3495,
+          "lift_over_random": -0.0055,
+          "margin": 0.0,
+          "margin_jump_rate": 0.0
+        },
+        "detail": {
+          "checkpoint": "/app/runs/prescreen/feedback.pth",
+          "visual_pathway": "linear_feedback",
+          "epochs": 30,
+          "learning_rate": 0.0005,
+          "jump_margin": -1.0,
+          "refractory_frames": 0,
+          "weight_deltas": {
+            "layer3_4": {
+              "l2_delta": 61.500095,
+              "l2_initial": 6.124972,
+              "relative": 10.040878
+            },
+            "layer2_3": {
+              "l2_delta": 542.426331,
+              "l2_initial": 15.93449,
+              "relative": 34.041022
+            },
+            "layer1_2": {
+              "l2_delta": 2857.741699,
+              "l2_initial": 25.028206,
+              "relative": 114.180845
+            },
+            "feedback_3_2": {
+              "l2_delta": 543.217651,
+              "l2_initial": 22.487244,
+              "relative": 24.156702
+            }
+          }
+        },
+        "margin": -1.0,
+        "at_margin": {
+          "margin": -1.0,
+          "method": "fixed_margin",
+          "samples": 495,
+          "jump_samples": 125,
+          "balanced_accuracy": 0.5,
+          "jump_recall": 1.0,
+          "run_recall": 0.0,
+          "jump_rate": 1.0,
+          "target_jump_rate": 0.2525
+        },
+        "evidence": {
+          "evidence_rule": "spike_sum",
+          "evidence_decay": 0.25
+        },
+        "margin_source": {
+          "source": "recalibrated_for_evidence_rule",
+          "rule": "spike_sum",
+          "margin": -1.0,
+          "shipped_rule": null,
+          "shipped_margin": -1.0,
+          "override": "spike_sum",
+          "calibration": {
+            "margin": -1.0,
+            "method": "balanced_accuracy",
+            "samples": 495,
+            "jump_samples": 125,
+            "balanced_accuracy": 0.5,
+            "jump_recall": 1.0,
+            "run_recall": 0.0,
+            "jump_rate": 1.0,
+            "target_jump_rate": 0.2525,
+            "degenerate": true,
+            "degenerate_reason": "no boundary beats the constant rules: the evidence does not separate the two chunk classes, so this margin is not a decision criterion",
+            "replays": 5,
+            "replay_seeds": [
+              45,
+              46,
+              47,
+              48,
+              49
+            ],
+            "decisions_per_replay": 99
+          },
+          "note": "the arm's threshold was not fitted for this evidence rule, so its units do not apply and the margin was re-fitted on the same teacher chunks, recording both values"
+        }
+      },
+      "role": "candidate"
+    }
+  ],
+  "paired": [
+    {
+      "arm": "round1",
+      "baseline": "untrained",
+      "metric": "jump_sequence_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 0.85,
+          "baseline": 0.7,
+          "delta": 0.15
+        },
+        {
+          "replay_seed": 46,
+          "arm": 0.85,
+          "baseline": 0.65,
+          "delta": 0.2
+        },
+        {
+          "replay_seed": 47,
+          "arm": 0.9,
+          "baseline": 0.7,
+          "delta": 0.2
+        },
+        {
+          "replay_seed": 48,
+          "arm": 0.8,
+          "baseline": 0.7,
+          "delta": 0.1
+        },
+        {
+          "replay_seed": 49,
+          "arm": 0.8,
+          "baseline": 0.55,
+          "delta": 0.25
+        }
+      ],
+      "mean_delta": 0.18,
+      "min_delta": 0.1,
+      "max_delta": 0.25,
+      "improved": 5,
+      "all_improved": true,
+      "baseline_mean": 0.66,
+      "arm_mean": 0.84
+    },
+    {
+      "arm": "round2",
+      "baseline": "untrained",
+      "metric": "jump_sequence_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 0.8,
+          "baseline": 0.7,
+          "delta": 0.1
+        },
+        {
+          "replay_seed": 46,
+          "arm": 0.3,
+          "baseline": 0.65,
+          "delta": -0.35
+        },
+        {
+          "replay_seed": 47,
+          "arm": 0.4,
+          "baseline": 0.7,
+          "delta": -0.3
+        },
+        {
+          "replay_seed": 48,
+          "arm": 0.4,
+          "baseline": 0.7,
+          "delta": -0.3
+        },
+        {
+          "replay_seed": 49,
+          "arm": 0.7,
+          "baseline": 0.55,
+          "delta": 0.15
+        }
+      ],
+      "mean_delta": -0.14,
+      "min_delta": -0.35,
+      "max_delta": 0.15,
+      "improved": 2,
+      "all_improved": false,
+      "baseline_mean": 0.66,
+      "arm_mean": 0.52
+    },
+    {
+      "arm": "feedback",
+      "baseline": "untrained",
+      "metric": "jump_sequence_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 1.0,
+          "baseline": 0.7,
+          "delta": 0.3
+        },
+        {
+          "replay_seed": 46,
+          "arm": 1.0,
+          "baseline": 0.65,
+          "delta": 0.35
+        },
+        {
+          "replay_seed": 47,
+          "arm": 1.0,
+          "baseline": 0.7,
+          "delta": 0.3
+        },
+        {
+          "replay_seed": 48,
+          "arm": 1.0,
+          "baseline": 0.7,
+          "delta": 0.3
+        },
+        {
+          "replay_seed": 49,
+          "arm": 1.0,
+          "baseline": 0.55,
+          "delta": 0.45
+        }
+      ],
+      "mean_delta": 0.34,
+      "min_delta": 0.3,
+      "max_delta": 0.45,
+      "improved": 5,
+      "all_improved": true,
+      "baseline_mean": 0.66,
+      "arm_mean": 1.0
+    }
+  ],
+  "paired_budget": [
+    {
+      "arm": "round1",
+      "baseline": "untrained",
+      "metric": "jump_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 0.56,
+          "baseline": 0.44,
+          "delta": 0.12
+        },
+        {
+          "replay_seed": 46,
+          "arm": 0.52,
+          "baseline": 0.36,
+          "delta": 0.16
+        },
+        {
+          "replay_seed": 47,
+          "arm": 0.6,
+          "baseline": 0.28,
+          "delta": 0.32
+        },
+        {
+          "replay_seed": 48,
+          "arm": 0.44,
+          "baseline": 0.32,
+          "delta": 0.12
+        },
+        {
+          "replay_seed": 49,
+          "arm": 0.36,
+          "baseline": 0.4,
+          "delta": -0.04
+        }
+      ],
+      "mean_delta": 0.136,
+      "min_delta": -0.04,
+      "max_delta": 0.32,
+      "improved": 4,
+      "all_improved": false,
+      "baseline_mean": 0.36,
+      "arm_mean": 0.496
+    },
+    {
+      "arm": "round2",
+      "baseline": "untrained",
+      "metric": "jump_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 0.6,
+          "baseline": 0.44,
+          "delta": 0.16
+        },
+        {
+          "replay_seed": 46,
+          "arm": 0.48,
+          "baseline": 0.36,
+          "delta": 0.12
+        },
+        {
+          "replay_seed": 47,
+          "arm": 0.56,
+          "baseline": 0.28,
+          "delta": 0.28
+        },
+        {
+          "replay_seed": 48,
+          "arm": 0.44,
+          "baseline": 0.32,
+          "delta": 0.12
+        },
+        {
+          "replay_seed": 49,
+          "arm": 0.44,
+          "baseline": 0.4,
+          "delta": 0.04
+        }
+      ],
+      "mean_delta": 0.144,
+      "min_delta": 0.04,
+      "max_delta": 0.28,
+      "improved": 5,
+      "all_improved": true,
+      "baseline_mean": 0.36,
+      "arm_mean": 0.504
+    },
+    {
+      "arm": "feedback",
+      "baseline": "untrained",
+      "metric": "jump_recall",
+      "paired_replays": 5,
+      "rows": [
+        {
+          "replay_seed": 45,
+          "arm": 0.28,
+          "baseline": 0.44,
+          "delta": -0.16
+        },
+        {
+          "replay_seed": 46,
+          "arm": 0.28,
+          "baseline": 0.36,
+          "delta": -0.08
+        },
+        {
+          "replay_seed": 47,
+          "arm": 0.28,
+          "baseline": 0.28,
+          "delta": 0.0
+        },
+        {
+          "replay_seed": 48,
+          "arm": 0.28,
+          "baseline": 0.32,
+          "delta": -0.04
+        },
+        {
+          "replay_seed": 49,
+          "arm": 0.28,
+          "baseline": 0.4,
+          "delta": -0.12
+        }
+      ],
+      "mean_delta": -0.08,
+      "min_delta": -0.16,
+      "max_delta": 0.0,
+      "improved": 0,
+      "all_improved": false,
+      "baseline_mean": 0.36,
+      "arm_mean": 0.28
+    }
+  ],
+  "verdicts": [
+    {
+      "arm": "round1",
+      "pass": false,
+      "criteria": [
+        {
+          "criterion": "offline_completion",
+          "detail": "no required jump missed, on every replay",
+          "pass": false,
+          "observed": 0.0,
+          "threshold": 1.0
+        },
+        {
+          "criterion": "jump_sequence_recall",
+          "detail": "teacher jumps taken in sequence, clear of the untrained baseline by 0.1",
+          "pass": false,
+          "observed": 0.84,
+          "threshold": 0.9
+        },
+        {
+          "criterion": "jump_rate_within_budget",
+          "detail": "the sequence spends no more than the jump budget on jumps",
+          "pass": true,
+          "observed": 0.2909,
+          "threshold": 0.35
+        },
+        {
+          "criterion": "beats_untrained",
+          "detail": "paired mean gain over the untrained baseline",
+          "pass": true,
+          "observed": 0.18,
+          "threshold": 0.1
+        },
+        {
+          "criterion": "consistent_across_replays",
+          "detail": "every paired replay improves, not just the average",
+          "pass": true,
+          "observed": "5/5",
+          "threshold": "all paired replays"
+        }
+      ],
+      "note": null
+    },
+    {
+      "arm": "round2",
+      "pass": false,
+      "criteria": [
+        {
+          "criterion": "offline_completion",
+          "detail": "no required jump missed, on every replay",
+          "pass": false,
+          "observed": 0.0,
+          "threshold": 1.0
+        },
+        {
+          "criterion": "jump_sequence_recall",
+          "detail": "teacher jumps taken in sequence, clear of the untrained baseline by 0.1",
+          "pass": false,
+          "observed": 0.52,
+          "threshold": 0.9
+        },
+        {
+          "criterion": "jump_rate_within_budget",
+          "detail": "the sequence spends no more than the jump budget on jumps",
+          "pass": true,
+          "observed": 0.1576,
+          "threshold": 0.35
+        },
+        {
+          "criterion": "beats_untrained",
+          "detail": "paired mean gain over the untrained baseline",
+          "pass": false,
+          "observed": -0.14,
+          "threshold": 0.1
+        },
+        {
+          "criterion": "consistent_across_replays",
+          "detail": "every paired replay improves, not just the average",
+          "pass": false,
+          "observed": "2/5",
+          "threshold": "all paired replays"
+        }
+      ],
+      "note": null
+    },
+    {
+      "arm": "feedback",
+      "pass": false,
+      "criteria": [
+        {
+          "criterion": "offline_completion",
+          "detail": "no required jump missed, on every replay",
+          "pass": true,
+          "observed": 1.0,
+          "threshold": 1.0
+        },
+        {
+          "criterion": "jump_sequence_recall",
+          "detail": "teacher jumps taken in sequence, clear of the untrained baseline by 0.1",
+          "pass": true,
+          "observed": 1.0,
+          "threshold": 0.9
+        },
+        {
+          "criterion": "jump_rate_within_budget",
+          "detail": "the sequence spends no more than the jump budget on jumps",
+          "pass": false,
+          "observed": 0.4949,
+          "threshold": 0.35
+        },
+        {
+          "criterion": "beats_untrained",
+          "detail": "paired mean gain over the untrained baseline",
+          "pass": true,
+          "observed": 0.34,
+          "threshold": 0.1
+        },
+        {
+          "criterion": "consistent_across_replays",
+          "detail": "every paired replay improves, not just the average",
+          "pass": true,
+          "observed": "5/5",
+          "threshold": "all paired replays"
+        }
+      ],
+      "note": null
+    }
+  ]
+}
